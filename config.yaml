@@ -1,0 +1,8 @@
+# Application configuration.
+# Env overrides: APP_PORT, MONGO_URI, MONGO_DB.
+server:
+  port: 8080
+
+mongo:
+  uri: mongodb://root:example@localhost:27017
+  database: protected_server
