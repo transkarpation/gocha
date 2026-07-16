@@ -34,11 +34,15 @@ func TestAppToken(t *testing.T) {
 		t.Fatalf("parse token: %v", err)
 	}
 	claims := parsed.Claims.(jwt.MapClaims)
-	if claims["type"] != "server" {
-		t.Errorf(`claim type = %v, want "server"`, claims["type"])
+	data, ok := claims["data"].(map[string]any)
+	if !ok {
+		t.Fatalf(`claims must be nested under "data", got %v`, claims)
 	}
-	if claims["appId"] != testKey {
-		t.Errorf("claim appId = %v, want %q", claims["appId"], testKey)
+	if data["type"] != "server" {
+		t.Errorf(`claim data.type = %v, want "server"`, data["type"])
+	}
+	if data["appId"] != testKey {
+		t.Errorf("claim data.appId = %v, want %q", data["appId"], testKey)
 	}
 
 	// A token signed with a different secret must not verify.
@@ -113,12 +117,11 @@ func TestCreateUsersBatch(t *testing.T) {
 		gotMethod = r.Method
 		json.NewDecoder(r.Body).Decode(&gotBody)
 
-		w.WriteHeader(http.StatusCreated)
+		// Ethora accepts the batch asynchronously.
+		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(map[string]any{
-			"users": []map[string]any{
-				{"_id": "e1", "uuid": gotBody.UsersList[0].UUID},
-				{"_id": "e2", "uuid": gotBody.UsersList[1].UUID},
-			},
+			"ok": true, "success": true,
+			"jobId": "1215", "statusUrl": "/v2/users/batch/1215",
 		})
 	}))
 	defer srv.Close()
@@ -128,7 +131,7 @@ func TestCreateUsersBatch(t *testing.T) {
 		{Email: "a@b.com", FirstName: "A", LastName: "B", Password: "pw1", UUID: "id-1"},
 		{Email: "c@d.com", FirstName: "C", LastName: "D", Password: "pw2", UUID: "id-2"},
 	}
-	created, err := c.CreateUsersBatch(context.Background(), batch, false)
+	job, err := c.CreateUsersBatch(context.Background(), batch, false)
 	if err != nil {
 		t.Fatalf("CreateUsersBatch: %v", err)
 	}
@@ -142,8 +145,8 @@ func TestCreateUsersBatch(t *testing.T) {
 	if len(gotBody.UsersList) != 2 || gotBody.UsersList[0].UUID != "id-1" || gotBody.UsersList[1].Email != "c@d.com" {
 		t.Errorf("usersList = %+v", gotBody.UsersList)
 	}
-	if len(created) != 2 || created[0].ID != "e1" || created[1].UUID != "id-2" {
-		t.Errorf("created = %+v", created)
+	if job.JobID != "1215" || job.StatusURL != "/v2/users/batch/1215" {
+		t.Errorf("job = %+v", job)
 	}
 }
 

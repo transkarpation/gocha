@@ -43,10 +43,17 @@ db `protected_server`, port 8080). Both binaries take a `-config`/`--config` fla
 ## Architecture
 
 `pkg/ethora` is a standalone HTTP client for the Ethora chat platform API:
-every request carries a JWT `{type: "server", appId: <api key>}` signed HS256
-with the API secret (raw token in the Authorization header, no Bearer prefix).
-Credentials and base_url come from the `ethora` config section. Planned use:
-mirroring user registration into Ethora.
+every request carries a JWT signed HS256 with the API secret, claims MUST be
+nested as `{"data": {"type": "server", "appId": <api key>}}` — top-level
+claims get rejected as INVALID_TOKEN_TYPE (raw token in the Authorization
+header, no Bearer prefix). Batch user creation is asynchronous (202 + jobId).
+
+User mirroring: `users.Register` calls the `users.ChatBackend` interface when
+one is provided; `internal/mirror.Ethora` is the adapter (random names,
+one-off password, our user id as uuid). Mirroring is best-effort — a failure
+is logged, registration still succeeds; that policy lives in `users.Register`.
+Credentials and base_url come from the `ethora` config section; without
+credentials mirroring is disabled (nil backend).
 
 Two entry points share the `internal/` packages:
 

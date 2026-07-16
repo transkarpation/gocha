@@ -19,8 +19,10 @@ import (
 
 	"github.com/transkarpation/gocha/internal/chats"
 	"github.com/transkarpation/gocha/internal/config"
+	"github.com/transkarpation/gocha/internal/mirror"
 	"github.com/transkarpation/gocha/internal/permissions"
 	"github.com/transkarpation/gocha/internal/users"
+	"github.com/transkarpation/gocha/pkg/ethora"
 )
 
 const (
@@ -29,7 +31,18 @@ const (
 	mongoTimeout      = 5 * time.Second
 )
 
-func setupRouter(storage *users.Storage, chatStorage *chats.Storage) chi.Router {
+// chatBackend builds the external chat mirror from config; returns nil
+// (mirroring disabled) when Ethora credentials are not set.
+func chatBackend(cfg config.EthoraConfig) users.ChatBackend {
+	if cfg.APIKey == "" || cfg.APISecret == "" {
+		slog.Info("ethora mirroring disabled: no credentials configured")
+		return nil
+	}
+	slog.Info("ethora mirroring enabled", "base_url", cfg.BaseURL)
+	return mirror.NewEthora(ethora.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APISecret))
+}
+
+func setupRouter(storage *users.Storage, chatStorage *chats.Storage, chat users.ChatBackend) chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
@@ -38,7 +51,7 @@ func setupRouter(storage *users.Storage, chatStorage *chats.Storage) chi.Router 
 
 	r.Get("/healthcheck", handleHealthcheck)
 
-	h := users.NewHandler(storage)
+	h := users.NewHandler(storage, chat)
 	r.Post("/register", h.Register)
 	r.Post("/login", h.Login)
 
@@ -107,7 +120,7 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: setupRouter(storage, chatStorage),
+		Handler: setupRouter(storage, chatStorage, chatBackend(cfg.Ethora)),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

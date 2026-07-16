@@ -34,13 +34,16 @@ func NewClient(baseURL, apiKey, apiSecret string) *Client {
 	}
 }
 
-// AppToken builds the server-to-server JWT — {"type":"server","appId":<api key>}
-// signed with the API secret (HS256) — that Ethora expects in the
-// Authorization header.
+// AppToken builds the server-to-server JWT that Ethora expects in the
+// Authorization header: {"data":{"type":"server","appId":<api key>}}
+// signed with the API secret (HS256). The nesting under "data" is required —
+// with top-level claims the API rejects the token as INVALID_TOKEN_TYPE.
 func (c *Client) AppToken() (string, error) {
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"type":  "server",
-		"appId": c.apiKey,
+		"data": map[string]string{
+			"type":  "server",
+			"appId": c.apiKey,
+		},
 	})
 	return tok.SignedString([]byte(c.apiSecret))
 }

@@ -26,7 +26,7 @@ func TestRegister(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	u, err := Register(ctx, s, "alice@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestRegister(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Register(ctx, s, tt.email, tt.password, tt.role); !errors.Is(err, tt.wantErr) {
+			if _, err := Register(ctx, s, nil, tt.email, tt.password, tt.role); !errors.Is(err, tt.wantErr) {
 				t.Errorf("Register() error = %v, want %v", err, tt.wantErr)
 			}
 		})
@@ -65,7 +65,7 @@ func TestLogin(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	created, err := Register(ctx, s, "alice@example.com", "secret123", permissions.RoleUser)
+	created, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSessions(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	u, err := Register(ctx, s, "alice@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -121,6 +121,48 @@ func TestSessions(t *testing.T) {
 	}
 	if _, err := s.SessionByToken(ctx, expired.Token); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expired token: error = %v, want ErrNotFound", err)
+	}
+}
+
+type fakeChat struct {
+	mirrored []User
+	fail     bool
+}
+
+func (f *fakeChat) MirrorUser(_ context.Context, u User) error {
+	if f.fail {
+		return errors.New("chat backend down")
+	}
+	f.mirrored = append(f.mirrored, u)
+	return nil
+}
+
+func TestRegisterMirrorsToChatBackend(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	chat := &fakeChat{}
+	u, err := Register(ctx, s, chat, "alice@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(chat.mirrored) != 1 || chat.mirrored[0].ID != u.ID {
+		t.Errorf("mirrored = %+v, want the registered user", chat.mirrored)
+	}
+
+	// A failing mirror must not fail the registration (best-effort policy).
+	failing := &fakeChat{fail: true}
+	if _, err := Register(ctx, s, failing, "bob@example.com", "secret123", permissions.RoleUser); err != nil {
+		t.Errorf("Register with failing mirror: %v, want success", err)
+	}
+
+	// A validation error must not reach the chat backend.
+	before := len(chat.mirrored)
+	if _, err := Register(ctx, s, chat, "alice@example.com", "secret123", permissions.RoleUser); !errors.Is(err, ErrEmailTaken) {
+		t.Fatalf("duplicate register: %v, want ErrEmailTaken", err)
+	}
+	if len(chat.mirrored) != before {
+		t.Error("failed registration must not be mirrored")
 	}
 }
 

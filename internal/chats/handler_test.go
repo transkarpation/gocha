@@ -88,7 +88,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("chats.NewStorage: %v", err)
 	}
 
-	uh := users.NewHandler(ustorage)
+	uh := users.NewHandler(ustorage, nil)
 	ch := NewHandler(cstorage, ustorage)
 
 	r := chi.NewRouter()
@@ -102,7 +102,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	env := &testEnv{router: r, storage: cstorage}
 	register := func(email string, role permissions.Role) (bson.ObjectID, string) {
-		u, err := users.Register(ctx, ustorage, email, "secret123", role)
+		u, err := users.Register(ctx, ustorage, nil, email, "secret123", role)
 		if err != nil {
 			t.Fatalf("register %s: %v", email, err)
 		}

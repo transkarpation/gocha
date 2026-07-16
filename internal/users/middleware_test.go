@@ -14,7 +14,7 @@ import (
 func authTestEnv(t *testing.T) (*Storage, *Handler) {
 	t.Helper()
 	s := newTestStorage(t)
-	return s, NewHandler(s)
+	return s, NewHandler(s, nil)
 }
 
 func echoUser(t *testing.T) http.HandlerFunc {
@@ -32,7 +32,7 @@ func TestAuthMiddleware(t *testing.T) {
 	s, h := authTestEnv(t)
 	ctx := context.Background()
 
-	u, err := Register(ctx, s, "alice@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -80,11 +80,11 @@ func TestRequirePermission(t *testing.T) {
 	s, h := authTestEnv(t)
 	ctx := context.Background()
 
-	admin, err := Register(ctx, s, "admin@example.com", "secret123", permissions.RoleAdmin)
+	admin, err := Register(ctx, s, nil, "admin@example.com", "secret123", permissions.RoleAdmin)
 	if err != nil {
 		t.Fatalf("Register admin: %v", err)
 	}
-	user, err := Register(ctx, s, "user@example.com", "secret123", permissions.RoleUser)
+	user, err := Register(ctx, s, nil, "user@example.com", "secret123", permissions.RoleUser)
 	if err != nil {
 		t.Fatalf("Register user: %v", err)
 	}

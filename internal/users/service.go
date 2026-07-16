@@ -5,12 +5,19 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/mail"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/transkarpation/gocha/internal/permissions"
 )
+
+// ChatBackend replicates our accounts into an external chat platform
+// (e.g. Ethora, see internal/mirror). A nil ChatBackend disables mirroring.
+type ChatBackend interface {
+	MirrorUser(ctx context.Context, u User) error
+}
 
 var (
 	ErrInvalidEmail       = errors.New("invalid email")
@@ -21,7 +28,12 @@ var (
 
 // Register validates credentials, hashes the password and stores the user.
 // Shared by the HTTP handler and the backendctrl CLI.
-func Register(ctx context.Context, s *Storage, email, password string, role permissions.Role) (User, error) {
+//
+// When chat is non-nil the new user is also mirrored into the external chat
+// platform. Mirroring is currently best-effort: a failure is logged and the
+// registration still succeeds. To change that policy (fail registration,
+// retry in background, ...) adjust this one spot.
+func Register(ctx context.Context, s *Storage, chat ChatBackend, email, password string, role permissions.Role) (User, error) {
 	if _, err := mail.ParseAddress(email); err != nil {
 		return User{}, ErrInvalidEmail
 	}
@@ -35,7 +47,18 @@ func Register(ctx context.Context, s *Storage, email, password string, role perm
 	if err != nil {
 		return User{}, err
 	}
-	return s.CreateUser(ctx, email, string(hash), role)
+	u, err := s.CreateUser(ctx, email, string(hash), role)
+	if err != nil {
+		return User{}, err
+	}
+
+	if chat != nil {
+		if err := chat.MirrorUser(ctx, u); err != nil {
+			slog.WarnContext(ctx, "mirror user to chat backend",
+				"user_id", u.ID.Hex(), "error", err)
+		}
+	}
+	return u, nil
 }
 
 // Login verifies the credentials and returns the matching user.

@@ -18,10 +18,11 @@ const (
 
 type Handler struct {
 	storage *Storage
+	chat    ChatBackend // nil disables mirroring
 }
 
-func NewHandler(storage *Storage) *Handler {
-	return &Handler{storage: storage}
+func NewHandler(storage *Storage, chat ChatBackend) *Handler {
+	return &Handler{storage: storage, chat: chat}
 }
 
 type credentialsRequest struct {
@@ -38,7 +39,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// HTTP self-registration always creates a plain user;
 	// admins are created via backendctrl.
-	u, err := Register(r.Context(), h.storage, req.Email, req.Password, permissions.RoleUser)
+	u, err := Register(r.Context(), h.storage, h.chat, req.Email, req.Password, permissions.RoleUser)
 	switch {
 	case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrPasswordTooShort):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())

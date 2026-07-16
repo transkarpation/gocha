@@ -11,8 +11,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/transkarpation/gocha/internal/config"
+	"github.com/transkarpation/gocha/internal/mirror"
 	"github.com/transkarpation/gocha/internal/permissions"
 	"github.com/transkarpation/gocha/internal/users"
+	"github.com/transkarpation/gocha/pkg/ethora"
 )
 
 const mongoTimeout = 5 * time.Second
@@ -69,31 +71,37 @@ func credentialFlags(name string, args []string) (email, password, configPath st
 	return *emailF, *passwordF, *configF, nil
 }
 
-// openStorage connects to Mongo from the config file and returns the
-// users storage plus a cleanup func that disconnects the client.
-func openStorage(ctx context.Context, configPath string) (*users.Storage, func(), error) {
+// openStorage connects to Mongo from the config file and returns the users
+// storage, the external chat mirror (nil when Ethora credentials are not
+// configured) and a cleanup func that disconnects the client.
+func openStorage(ctx context.Context, configPath string) (*users.Storage, users.ChatBackend, func(), error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	client, err := mongo.Connect(options.Client().ApplyURI(cfg.Mongo.URI))
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect to mongo: %w", err)
+		return nil, nil, nil, fmt.Errorf("connect to mongo: %w", err)
 	}
 	cleanup := func() { client.Disconnect(context.Background()) }
 
 	if err := client.Ping(ctx, nil); err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("ping mongo: %w", err)
+		return nil, nil, nil, fmt.Errorf("ping mongo: %w", err)
 	}
 
 	storage, err := users.NewStorage(ctx, client.Database(cfg.Mongo.Database))
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("init storage: %w", err)
+		return nil, nil, nil, fmt.Errorf("init storage: %w", err)
 	}
-	return storage, cleanup, nil
+
+	var chat users.ChatBackend
+	if cfg.Ethora.APIKey != "" && cfg.Ethora.APISecret != "" {
+		chat = mirror.NewEthora(ethora.NewClient(cfg.Ethora.BaseURL, cfg.Ethora.APIKey, cfg.Ethora.APISecret))
+	}
+	return storage, chat, cleanup, nil
 }
 
 func runRegister(args []string) error {
@@ -112,13 +120,13 @@ func runRegister(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
 	defer cancel()
 
-	storage, cleanup, err := openStorage(ctx, *configPath)
+	storage, chat, cleanup, err := openStorage(ctx, *configPath)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	u, err := users.Register(ctx, storage, *email, *password, permissions.Role(*role))
+	u, err := users.Register(ctx, storage, chat, *email, *password, permissions.Role(*role))
 	if err != nil {
 		return err
 	}
@@ -136,7 +144,7 @@ func runLogin(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
 	defer cancel()
 
-	storage, cleanup, err := openStorage(ctx, configPath)
+	storage, _, cleanup, err := openStorage(ctx, configPath)
 	if err != nil {
 		return err
 	}
