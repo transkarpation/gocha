@@ -146,6 +146,14 @@ func (f *fakeChat) DeleteUser(_ context.Context, userID string) error {
 	return nil
 }
 
+func (f *fakeChat) DeleteUsers(_ context.Context, userIDs []string) error {
+	if f.fail {
+		return errors.New("chat backend down")
+	}
+	f.deleted = append(f.deleted, userIDs...)
+	return nil
+}
+
 func TestRegisterMirrorsToChatBackend(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
@@ -219,6 +227,59 @@ func TestDeleteUser(t *testing.T) {
 	}
 	if err := DeleteUser(ctx, s, &fakeChat{fail: true}, u2.ID); err != nil {
 		t.Errorf("DeleteUser with failing chat backend: %v, want success", err)
+	}
+}
+
+func TestDeleteAllUsers(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	chat := &fakeChat{}
+
+	t.Run("empty storage", func(t *testing.T) {
+		count, err := DeleteAllUsers(ctx, s, chat)
+		if err != nil || count != 0 {
+			t.Errorf("count = %d, err = %v; want 0, nil", count, err)
+		}
+		if len(chat.deleted) != 0 {
+			t.Error("chat backend must not be called for empty storage")
+		}
+	})
+
+	var ids []string
+	var lastToken string
+	for _, email := range []string{"a@example.com", "b@example.com", "c@example.com"} {
+		u, err := Register(ctx, s, nil, email, "secret123", permissions.RoleUser)
+		if err != nil {
+			t.Fatalf("Register %s: %v", email, err)
+		}
+		sess, err := IssueSession(ctx, s, u)
+		if err != nil {
+			t.Fatalf("IssueSession %s: %v", email, err)
+		}
+		ids = append(ids, u.ID.Hex())
+		lastToken = sess.Token
+	}
+
+	count, err := DeleteAllUsers(ctx, s, chat)
+	if err != nil {
+		t.Fatalf("DeleteAllUsers: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+	if remaining, _ := s.ListUsers(ctx, 10, 0); len(remaining) != 0 {
+		t.Errorf("users remaining: %v", remaining)
+	}
+	if _, err := s.SessionByToken(ctx, lastToken); !errors.Is(err, ErrNotFound) {
+		t.Errorf("session survived wipe: %v", err)
+	}
+	if len(chat.deleted) != 3 {
+		t.Fatalf("chat deleted = %v, want all 3 ids", chat.deleted)
+	}
+	for i, id := range ids {
+		if chat.deleted[i] != id {
+			t.Errorf("chat.deleted[%d] = %s, want %s", i, chat.deleted[i], id)
+		}
 	}
 }
 

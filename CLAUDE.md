@@ -53,14 +53,18 @@ one is provided; `internal/mirror.Ethora` is the adapter (random names,
 one-off password, our user id as uuid). Mirroring is best-effort — a failure
 is logged, registration still succeeds; that policy lives in `users.Register`.
 Credentials and base_url come from the `ethora` config section; without
-credentials mirroring is disabled (nil backend).
+credentials mirroring is disabled (nil backend). Ethora's batch delete is
+all-or-nothing (404 when any id is unknown), so the adapter falls back to
+per-id deletes and treats a single-id 404 as success (already gone).
 
 Two entry points share the `internal/` packages:
 
 - `main.go` — HTTP server (chi). `setupRouter` wires all routes; protected
   routes live in the `r.Group` that applies `users.Handler.Auth`.
-- `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`, `list`
-  subcommands; `delete` and `list` bypass permission checks by design).
+- `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`, `list`,
+  `delete-all` subcommands; all except `login` bypass permission checks by
+  design, `delete-all` requires `--yes`). There is deliberately no HTTP route
+  for bulk deletion.
   Its results (`session_token=...`) print via `fmt` to stdout on purpose —
   scripts parse them; don't convert to slog.
 

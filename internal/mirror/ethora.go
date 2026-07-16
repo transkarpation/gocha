@@ -5,8 +5,10 @@ package mirror
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/transkarpation/gocha/internal/users"
 	"github.com/transkarpation/gocha/pkg/ethora"
@@ -40,10 +42,41 @@ func (e *Ethora) MirrorUser(ctx context.Context, u users.User) error {
 }
 
 // DeleteUser removes the mirrored Ethora account by our user id
-// (Ethora knows it as the uuid set at creation time).
+// (Ethora knows it as the uuid set at creation time). A 404 counts as
+// success — the account is already gone, which is the desired state.
 func (e *Ethora) DeleteUser(ctx context.Context, userID string) error {
-	if err := e.client.DeleteUsersBatch(ctx, []string{userID}); err != nil {
-		return fmt.Errorf("delete ethora user: %w", err)
+	err := e.client.DeleteUsersBatch(ctx, []string{userID})
+	if err != nil && !isNotFound(err) {
+		return fmt.Errorf("delete ethora user %s: %w", userID, err)
 	}
 	return nil
+}
+
+// DeleteUsers removes many mirrored Ethora accounts. It tries one batch
+// call first; Ethora fails the whole batch when any id is unknown (users
+// created before mirroring existed), so on failure it falls back to
+// per-id deletes and only reports ids that genuinely failed.
+func (e *Ethora) DeleteUsers(ctx context.Context, userIDs []string) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	// A 404 on a multi-id batch means "some id unknown, nothing deleted",
+	// so it must go through the fallback, not count as success.
+	err := e.client.DeleteUsersBatch(ctx, userIDs)
+	if err == nil || (len(userIDs) == 1 && isNotFound(err)) {
+		return nil
+	}
+
+	var errs []error
+	for _, id := range userIDs {
+		if err := e.DeleteUser(ctx, id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func isNotFound(err error) bool {
+	var apiErr *ethora.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }

@@ -177,6 +177,38 @@ func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
 	return s.DeleteSessions(ctx, id)
 }
 
+// AllUserIDs returns the ids of every user.
+func (s *Storage) AllUserIDs(ctx context.Context) ([]bson.ObjectID, error) {
+	opts := options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}})
+	cur, err := s.users.Find(ctx, bson.D{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	var docs []struct {
+		ID bson.ObjectID `bson:"_id"`
+	}
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	ids := make([]bson.ObjectID, len(docs))
+	for i, d := range docs {
+		ids[i] = d.ID
+	}
+	return ids, nil
+}
+
+// DeleteAllUsers removes every user and every session.
+func (s *Storage) DeleteAllUsers(ctx context.Context) (int64, error) {
+	res, err := s.users.DeleteMany(ctx, bson.D{})
+	if err != nil {
+		return 0, err
+	}
+	if _, err := s.sessions.DeleteMany(ctx, bson.D{}); err != nil {
+		return res.DeletedCount, err
+	}
+	return res.DeletedCount, nil
+}
+
 // DeleteSessions invalidates all sessions of the user.
 func (s *Storage) DeleteSessions(ctx context.Context, userID bson.ObjectID) error {
 	_, err := s.sessions.DeleteMany(ctx, bson.D{{Key: "user_id", Value: userID}})

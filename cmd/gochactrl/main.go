@@ -36,6 +36,8 @@ func main() {
 		err = runDelete(os.Args[2:])
 	case "list":
 		err = runList(os.Args[2:])
+	case "delete-all":
+		err = runDeleteAll(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -55,6 +57,7 @@ Commands:
   login      verify credentials and issue a session token
   delete     delete a user by --id or --email (no permission checks)
   list       list users (--limit, --offset; no permission checks)
+  delete-all delete ALL users and sessions (requires --yes)
 
 Common flags:
   --email <addr> --password <pass> [--config <path>]
@@ -182,6 +185,34 @@ func runDelete(args []string) error {
 		return err
 	}
 	fmt.Printf("user deleted: id=%s email=%s\n", u.ID.Hex(), u.Email)
+	return nil
+}
+
+func runDeleteAll(args []string) error {
+	fs := flag.NewFlagSet("delete-all", flag.ExitOnError)
+	yes := fs.Bool("yes", false, "confirm deleting ALL users (required)")
+	configPath := fs.String("config", "config.yaml", "path to config file")
+	fs.Parse(args)
+
+	if !*yes {
+		fs.Usage()
+		return fmt.Errorf("refusing to delete all users without --yes")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
+	defer cancel()
+
+	storage, chat, cleanup, err := openStorage(ctx, *configPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	count, err := users.DeleteAllUsers(ctx, storage, chat)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("deleted %d users\n", count)
 	return nil
 }
 

@@ -20,6 +20,8 @@ type ChatBackend interface {
 	MirrorUser(ctx context.Context, u User) error
 	// DeleteUser removes the mirrored account; userID is our user id in hex.
 	DeleteUser(ctx context.Context, userID string) error
+	// DeleteUsers removes many mirrored accounts in one call.
+	DeleteUsers(ctx context.Context, userIDs []string) error
 }
 
 var (
@@ -125,6 +127,36 @@ func DeleteUser(ctx context.Context, s *Storage, chat ChatBackend, id bson.Objec
 		}
 	}
 	return nil
+}
+
+// DeleteAllUsers wipes every user and session and (best-effort) all
+// mirrored chat accounts. Returns the number of deleted users.
+// Used by gochactrl only — there is deliberately no HTTP route for this.
+func DeleteAllUsers(ctx context.Context, s *Storage, chat ChatBackend) (int64, error) {
+	ids, err := s.AllUserIDs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	count, err := s.DeleteAllUsers(ctx)
+	if err != nil {
+		return count, err
+	}
+
+	if chat != nil {
+		hexIDs := make([]string, len(ids))
+		for i, id := range ids {
+			hexIDs[i] = id.Hex()
+		}
+		if err := chat.DeleteUsers(ctx, hexIDs); err != nil {
+			slog.WarnContext(ctx, "delete users from chat backend",
+				"count", len(hexIDs), "error", err)
+		}
+	}
+	return count, nil
 }
 
 // Login verifies the credentials and returns the matching user.

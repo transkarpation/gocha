@@ -89,6 +89,9 @@ go build -o bin/gochactrl.exe ./cmd/gochactrl
 
 # list users (tab-separated: id, role, created_at, email)
 ./bin/gochactrl.exe list --limit 20 --offset 0
+
+# wipe ALL users, sessions and their Ethora mirrors (destructive!)
+./bin/gochactrl.exe delete-all --yes
 ```
 
 Role capabilities are defined in `internal/permissions` — the single registry
