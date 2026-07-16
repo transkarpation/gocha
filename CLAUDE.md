@@ -42,6 +42,12 @@ db `protected_server`, port 8080). Both binaries take a `-config`/`--config` fla
 
 ## Architecture
 
+`pkg/ethora` is a standalone HTTP client for the Ethora chat platform API:
+every request carries a JWT `{type: "server", appId: <api key>}` signed HS256
+with the API secret (raw token in the Authorization header, no Bearer prefix).
+Credentials and base_url come from the `ethora` config section. Planned use:
+mirroring user registration into Ethora.
+
 Two entry points share the `internal/` packages:
 
 - `main.go` — HTTP server (chi). `setupRouter` wires all routes; protected

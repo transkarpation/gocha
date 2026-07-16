@@ -17,6 +17,9 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Mongo.Database != "protected_server" {
 		t.Errorf("database = %q, want default", cfg.Mongo.Database)
 	}
+	if cfg.Ethora.BaseURL != "https://api.chat.ethora.com/" {
+		t.Errorf("ethora base_url = %q, want default", cfg.Ethora.BaseURL)
+	}
 }
 
 func TestLoadFromFile(t *testing.T) {
@@ -51,6 +54,7 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("APP_PORT", "7070")
 	t.Setenv("MONGO_URI", "mongodb://env:27017")
 	t.Setenv("MONGO_DB", "envdb")
+	t.Setenv("ETHORA_BASE_URL", "https://env.example.com/")
 	t.Setenv("ETHORA_API_KEY", "env-key")
 	t.Setenv("ETHORA_API_SECRET", "env-secret")
 
@@ -61,7 +65,7 @@ func TestEnvOverrides(t *testing.T) {
 	if cfg.Server.Port != 7070 || cfg.Mongo.URI != "mongodb://env:27017" || cfg.Mongo.Database != "envdb" {
 		t.Errorf("env overrides not applied: %+v", cfg)
 	}
-	if cfg.Ethora.APIKey != "env-key" || cfg.Ethora.APISecret != "env-secret" {
+	if cfg.Ethora.BaseURL != "https://env.example.com/" || cfg.Ethora.APIKey != "env-key" || cfg.Ethora.APISecret != "env-secret" {
 		t.Errorf("ethora env overrides not applied: %+v", cfg.Ethora)
 	}
 }

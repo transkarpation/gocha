@@ -24,6 +24,7 @@ type MongoConfig struct {
 }
 
 type EthoraConfig struct {
+	BaseURL   string `yaml:"base_url"`
 	APIKey    string `yaml:"api_key"`
 	APISecret string `yaml:"api_secret"`
 }
@@ -35,12 +36,16 @@ func defaults() Config {
 			URI:      "mongodb://root:example@localhost:27017",
 			Database: "protected_server",
 		},
+		Ethora: EthoraConfig{
+			BaseURL: "https://api.chat.ethora.com/",
+		},
 	}
 }
 
 // Load reads the config file and applies env overrides
-// (APP_PORT, MONGO_URI, MONGO_DB, ETHORA_API_KEY, ETHORA_API_SECRET)
-// on top of it. A missing file is not an error — defaults are used instead.
+// (APP_PORT, MONGO_URI, MONGO_DB, ETHORA_BASE_URL, ETHORA_API_KEY,
+// ETHORA_API_SECRET) on top of it. A missing file is not an error —
+// defaults are used instead.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 
@@ -68,6 +73,9 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("MONGO_DB"); v != "" {
 		cfg.Mongo.Database = v
+	}
+	if v := os.Getenv("ETHORA_BASE_URL"); v != "" {
+		cfg.Ethora.BaseURL = v
 	}
 	if v := os.Getenv("ETHORA_API_KEY"); v != "" {
 		cfg.Ethora.APIKey = v
