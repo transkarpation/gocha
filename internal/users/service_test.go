@@ -126,6 +126,7 @@ func TestSessions(t *testing.T) {
 
 type fakeChat struct {
 	mirrored []User
+	deleted  []string
 	fail     bool
 }
 
@@ -134,6 +135,14 @@ func (f *fakeChat) MirrorUser(_ context.Context, u User) error {
 		return errors.New("chat backend down")
 	}
 	f.mirrored = append(f.mirrored, u)
+	return nil
+}
+
+func (f *fakeChat) DeleteUser(_ context.Context, userID string) error {
+	if f.fail {
+		return errors.New("chat backend down")
+	}
+	f.deleted = append(f.deleted, userID)
 	return nil
 }
 
@@ -163,6 +172,53 @@ func TestRegisterMirrorsToChatBackend(t *testing.T) {
 	}
 	if len(chat.mirrored) != before {
 		t.Error("failed registration must not be mirrored")
+	}
+}
+
+func TestDeleteUser(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	chat := &fakeChat{}
+
+	u, err := Register(ctx, s, chat, "doomed@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	sess, err := IssueSession(ctx, s, u)
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+
+	if err := DeleteUser(ctx, s, chat, u.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	if _, err := s.UserByID(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("user still exists after delete: %v", err)
+	}
+	if _, err := s.SessionByToken(ctx, sess.Token); !errors.Is(err, ErrNotFound) {
+		t.Errorf("session still valid after delete: %v", err)
+	}
+	if len(chat.deleted) != 1 || chat.deleted[0] != u.ID.Hex() {
+		t.Errorf("chat deleted = %v, want [%s]", chat.deleted, u.ID.Hex())
+	}
+
+	// Deleting again reports not found and must not reach the chat backend.
+	before := len(chat.deleted)
+	if err := DeleteUser(ctx, s, chat, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("second delete: %v, want ErrNotFound", err)
+	}
+	if len(chat.deleted) != before {
+		t.Error("failed delete must not be mirrored")
+	}
+
+	// A failing chat backend must not fail the deletion.
+	u2, err := Register(ctx, s, nil, "doomed2@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := DeleteUser(ctx, s, &fakeChat{fail: true}, u2.ID); err != nil {
+		t.Errorf("DeleteUser with failing chat backend: %v, want success", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -31,6 +32,8 @@ func main() {
 		err = runRegister(os.Args[2:])
 	case "login":
 		err = runLogin(os.Args[2:])
+	case "delete":
+		err = runDelete(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -48,6 +51,7 @@ func usage() {
 Commands:
   register   create a new user (--role admin|user, default user)
   login      verify credentials and issue a session token
+  delete     delete a user by --id or --email (no permission checks)
 
 Common flags:
   --email <addr> --password <pass> [--config <path>]
@@ -132,6 +136,49 @@ func runRegister(args []string) error {
 	}
 
 	fmt.Printf("user created: id=%s email=%s role=%s\n", u.ID.Hex(), u.Email, u.Role)
+	return nil
+}
+
+func runDelete(args []string) error {
+	fs := flag.NewFlagSet("delete", flag.ExitOnError)
+	id := fs.String("id", "", "user id in hex")
+	email := fs.String("email", "", "user email (alternative to --id)")
+	configPath := fs.String("config", "config.yaml", "path to config file")
+	fs.Parse(args)
+
+	if (*id == "") == (*email == "") {
+		fs.Usage()
+		return fmt.Errorf("exactly one of --id or --email is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
+	defer cancel()
+
+	storage, chat, cleanup, err := openStorage(ctx, *configPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	var u users.User
+	if *email != "" {
+		u, err = storage.UserByEmail(ctx, *email)
+	} else {
+		var oid bson.ObjectID
+		oid, err = bson.ObjectIDFromHex(*id)
+		if err != nil {
+			return fmt.Errorf("invalid user id: %q", *id)
+		}
+		u, err = storage.UserByID(ctx, oid)
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := users.DeleteUser(ctx, storage, chat, u.ID); err != nil {
+		return err
+	}
+	fmt.Printf("user deleted: id=%s email=%s\n", u.ID.Hex(), u.Email)
 	return nil
 }
 

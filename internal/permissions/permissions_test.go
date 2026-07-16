@@ -15,6 +15,8 @@ func TestHas(t *testing.T) {
 		{"user cannot delete chats", RoleUser, ChatsDelete, false},
 		{"user can send messages", RoleUser, MessagesCreate, true},
 		{"user can read messages", RoleUser, MessagesRead, true},
+		{"admin can delete users", RoleAdmin, UsersDelete, true},
+		{"user cannot delete users", RoleUser, UsersDelete, false},
 		{"empty role behaves as user", "", ChatsCreate, true},
 		{"empty role cannot delete chats", "", ChatsDelete, false},
 		{"unknown role has nothing", "superuser", ChatsCreate, false},

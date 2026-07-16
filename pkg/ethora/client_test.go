@@ -177,6 +177,40 @@ func TestRandomBatchUser(t *testing.T) {
 	}
 }
 
+func TestDeleteUsersBatch(t *testing.T) {
+	var gotPath, gotMethod, gotAuth string
+	var gotBody struct {
+		UsersIDList []string `json:"usersIdList"`
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("Authorization")
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, testKey, testSecret)
+	if err := c.DeleteUsersBatch(context.Background(), []string{"id-1", "id-2"}); err != nil {
+		t.Fatalf("DeleteUsersBatch: %v", err)
+	}
+
+	if gotMethod != http.MethodDelete || gotPath != "/v1/users/batch" {
+		t.Errorf("request = %s %s, want DELETE /v1/users/batch", gotMethod, gotPath)
+	}
+	if len(gotBody.UsersIDList) != 2 || gotBody.UsersIDList[0] != "id-1" || gotBody.UsersIDList[1] != "id-2" {
+		t.Errorf("usersIdList = %v", gotBody.UsersIDList)
+	}
+	if _, err := jwt.Parse(gotAuth, func(*jwt.Token) (any, error) {
+		return []byte(testSecret), nil
+	}); err != nil {
+		t.Errorf("Authorization header is not a valid token: %v", err)
+	}
+}
+
 func TestAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

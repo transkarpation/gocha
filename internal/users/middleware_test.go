@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/transkarpation/gocha/internal/permissions"
 )
 
@@ -134,4 +136,57 @@ func TestRequirePermission(t *testing.T) {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 		}
 	})
+}
+
+func TestDeleteUserRoute(t *testing.T) {
+	s, h := authTestEnv(t)
+	ctx := context.Background()
+
+	admin, err := Register(ctx, s, nil, "admin@example.com", "secret123", permissions.RoleAdmin)
+	if err != nil {
+		t.Fatalf("Register admin: %v", err)
+	}
+	victim, err := Register(ctx, s, nil, "victim@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register victim: %v", err)
+	}
+	adminSess, err := IssueSession(ctx, s, admin)
+	if err != nil {
+		t.Fatalf("IssueSession admin: %v", err)
+	}
+	victimSess, err := IssueSession(ctx, s, victim)
+	if err != nil {
+		t.Fatalf("IssueSession victim: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(h.Auth)
+		r.With(RequirePermission(permissions.UsersDelete)).Delete("/users/{id}", h.Delete)
+	})
+
+	do := func(path, token string) int {
+		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := do("/users/"+victim.ID.Hex(), victimSess.Token); code != http.StatusForbidden {
+		t.Errorf("plain user delete: status = %d, want 403", code)
+	}
+	if code := do("/users/not-hex", adminSess.Token); code != http.StatusUnprocessableEntity {
+		t.Errorf("invalid id: status = %d, want 422", code)
+	}
+	if code := do("/users/"+victim.ID.Hex(), adminSess.Token); code != http.StatusNoContent {
+		t.Errorf("admin delete: status = %d, want 204", code)
+	}
+	if code := do("/users/"+victim.ID.Hex(), adminSess.Token); code != http.StatusNotFound {
+		t.Errorf("second delete: status = %d, want 404", code)
+	}
+	// The victim's session died with the account.
+	if code := do("/users/"+admin.ID.Hex(), victimSess.Token); code != http.StatusUnauthorized {
+		t.Errorf("deleted user's token: status = %d, want 401", code)
+	}
 }

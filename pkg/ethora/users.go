@@ -73,6 +73,16 @@ func (c *Client) CreateUsersBatch(ctx context.Context, users []BatchUser, bypass
 	return job, nil
 }
 
+type deleteUsersBatchRequest struct {
+	UsersIDList []string `json:"usersIdList"`
+}
+
+// DeleteUsersBatch removes users via DELETE /v1/users/batch. The ids are
+// our server-side user ids — the same values sent as uuid at creation time.
+func (c *Client) DeleteUsersBatch(ctx context.Context, ids []string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/users/batch", deleteUsersBatchRequest{UsersIDList: ids}, nil)
+}
+
 // RandomBatchUser builds a BatchUser for mirroring one of our accounts into
 // Ethora: the given email and uuid (our server-side user id) plus random
 // names and a random one-off password. The password exists only in this

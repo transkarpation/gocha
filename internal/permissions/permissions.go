@@ -30,6 +30,11 @@ const (
 	MessagesRead   Permission = "messages:read"
 )
 
+// Users.
+const (
+	UsersDelete Permission = "users:delete"
+)
+
 var rolePermissions = map[Role]map[Permission]bool{
 	RoleAdmin: {
 		ChatsCreate:    true,
@@ -38,6 +43,7 @@ var rolePermissions = map[Role]map[Permission]bool{
 		ChatsDelete:    true,
 		MessagesCreate: true,
 		MessagesRead:   true,
+		UsersDelete:    true,
 	},
 	RoleUser: {
 		ChatsCreate:    true,

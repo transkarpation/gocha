@@ -101,6 +101,20 @@ func (s *Storage) findUser(ctx context.Context, filter bson.D) (User, error) {
 	return u, err
 }
 
+// DeleteUser removes the user and all their sessions, so outstanding
+// tokens stop working immediately.
+func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
+	res, err := s.users.DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	_, err = s.sessions.DeleteMany(ctx, bson.D{{Key: "user_id", Value: id}})
+	return err
+}
+
 // CountExisting returns how many of the given user ids exist.
 func (s *Storage) CountExisting(ctx context.Context, ids []bson.ObjectID) (int64, error) {
 	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}}

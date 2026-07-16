@@ -38,3 +38,12 @@ func (e *Ethora) MirrorUser(ctx context.Context, u users.User) error {
 		"user_id", u.ID.Hex(), "job_id", job.JobID)
 	return nil
 }
+
+// DeleteUser removes the mirrored Ethora account by our user id
+// (Ethora knows it as the uuid set at creation time).
+func (e *Ethora) DeleteUser(ctx context.Context, userID string) error {
+	if err := e.client.DeleteUsersBatch(ctx, []string{userID}); err != nil {
+		return fmt.Errorf("delete ethora user: %w", err)
+	}
+	return nil
+}

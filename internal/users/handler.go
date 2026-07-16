@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/transkarpation/gocha/internal/permissions"
 )
 
@@ -75,6 +78,25 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.respondWithSession(w, r, u, http.StatusOK)
+}
+
+// Delete removes a user (admin permission is enforced by the route).
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := bson.ObjectIDFromHex(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid user id")
+		return
+	}
+
+	switch err := DeleteUser(r.Context(), h.storage, h.chat, id); {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "user not found")
+	case err != nil:
+		slog.ErrorContext(r.Context(), "delete user", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // Me returns the user resolved by the Auth middleware.

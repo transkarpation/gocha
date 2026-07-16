@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/mail"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/transkarpation/gocha/internal/permissions"
@@ -17,6 +18,8 @@ import (
 // (e.g. Ethora, see internal/mirror). A nil ChatBackend disables mirroring.
 type ChatBackend interface {
 	MirrorUser(ctx context.Context, u User) error
+	// DeleteUser removes the mirrored account; userID is our user id in hex.
+	DeleteUser(ctx context.Context, userID string) error
 }
 
 var (
@@ -59,6 +62,22 @@ func Register(ctx context.Context, s *Storage, chat ChatBackend, email, password
 		}
 	}
 	return u, nil
+}
+
+// DeleteUser removes the user, all their sessions and (best-effort, same
+// policy as mirroring in Register) the mirrored chat account.
+// Shared by the HTTP handler and the gochactrl CLI.
+func DeleteUser(ctx context.Context, s *Storage, chat ChatBackend, id bson.ObjectID) error {
+	if err := s.DeleteUser(ctx, id); err != nil {
+		return err
+	}
+	if chat != nil {
+		if err := chat.DeleteUser(ctx, id.Hex()); err != nil {
+			slog.WarnContext(ctx, "delete user from chat backend",
+				"user_id", id.Hex(), "error", err)
+		}
+	}
+	return nil
 }
 
 // Login verifies the credentials and returns the matching user.

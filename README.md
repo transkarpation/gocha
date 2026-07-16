@@ -50,6 +50,7 @@ Authenticated (send `Authorization: Bearer <token>` or the `session` cookie):
 | Method | Path | Permission | Description |
 |---|---|---|---|
 | `GET` | `/me` | — | current user |
+| `DELETE` | `/users/{id}` | `users:delete` (admin only) | delete a user (and their Ethora mirror) |
 | `POST` | `/chats` | `chats:create` | create a chat (`name`, `type`: `public`/`group`, `participants`: user ids) |
 | `DELETE` | `/chats/{id}` | `chats:delete` (admin only) | delete a chat |
 | `POST` | `/chats/{id}/messages` | `messages:create` | send a message (`text`) |
@@ -80,6 +81,9 @@ go build -o bin/gochactrl.exe ./cmd/gochactrl
 
 ./bin/gochactrl.exe register --email admin@example.com --password secret123 --role admin
 ./bin/gochactrl.exe login --email admin@example.com --password secret123
+
+# delete a user bypassing permission checks (direct DB access)
+./bin/gochactrl.exe delete --email someone@example.com   # or --id <hex>
 ```
 
 Role capabilities are defined in `internal/permissions` — the single registry
