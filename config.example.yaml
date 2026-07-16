@@ -1,4 +1,5 @@
-# Application configuration.
+# Application configuration template.
+# Copy to config.yaml (gitignored) and adjust for your environment.
 # Env overrides: APP_PORT, MONGO_URI, MONGO_DB.
 server:
   port: 8080

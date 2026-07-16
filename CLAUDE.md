@@ -35,7 +35,8 @@ never touch the `protected_server` database.
 ## Configuration
 
 Priority: env vars > `config.yaml` > defaults in `internal/config/config.go`.
-Env overrides: `APP_PORT`, `MONGO_URI`, `MONGO_DB`. A missing config file is
+Env overrides: `APP_PORT`, `MONGO_URI`, `MONGO_DB`. `config.yaml` is gitignored —
+copy it from the tracked `config.example.yaml`. A missing config file is
 not an error (defaults match the docker-compose Mongo: root/example@localhost:27017,
 db `protected_server`, port 8080). Both binaries take a `-config`/`--config` flag.
 

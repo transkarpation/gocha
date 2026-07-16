@@ -4,3 +4,6 @@
 
 # Logs
 *.log
+
+# Local configuration (copy config.example.yaml to config.yaml)
+config.yaml
