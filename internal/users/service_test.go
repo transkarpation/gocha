@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/transkarpation/gocha/internal/permissions"
 	"github.com/transkarpation/gocha/internal/testutil"
 )
@@ -183,7 +185,7 @@ func TestRegisterMirrorsToChatBackend(t *testing.T) {
 	}
 }
 
-func TestDeleteUser(t *testing.T) {
+func TestDeleteUserIsSoft(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 	chat := &fakeChat{}
@@ -197,36 +199,90 @@ func TestDeleteUser(t *testing.T) {
 		t.Fatalf("IssueSession: %v", err)
 	}
 
-	if err := DeleteUser(ctx, s, chat, u.ID); err != nil {
+	if err := DeleteUser(ctx, s, u.ID); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 
+	// Invisible everywhere that matters...
 	if _, err := s.UserByID(ctx, u.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("user still exists after delete: %v", err)
+		t.Errorf("UserByID after soft delete: %v, want ErrNotFound", err)
+	}
+	if _, err := Login(ctx, s, "doomed@example.com", "secret123"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("login after soft delete: %v, want ErrInvalidCredentials", err)
 	}
 	if _, err := s.SessionByToken(ctx, sess.Token); !errors.Is(err, ErrNotFound) {
-		t.Errorf("session still valid after delete: %v", err)
+		t.Errorf("session still valid after soft delete: %v", err)
+	}
+	if list, _ := s.ListUsers(ctx, 10, 0); len(list) != 0 {
+		t.Errorf("soft-deleted user shows up in list: %v", list)
+	}
+	if n, _ := s.CountExisting(ctx, []bson.ObjectID{u.ID}); n != 0 {
+		t.Errorf("CountExisting = %d, want 0 for soft-deleted", n)
+	}
+
+	// ...but the document survives with deleted_at set,
+	// the email stays taken, and the Ethora mirror is untouched.
+	got, err := s.AnyUserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("AnyUserByID: %v", err)
+	}
+	if got.DeletedAt == nil {
+		t.Error("deleted_at not set on soft-deleted user")
+	}
+	if _, err := Register(ctx, s, nil, "doomed@example.com", "secret123", permissions.RoleUser); !errors.Is(err, ErrEmailTaken) {
+		t.Errorf("re-register soft-deleted email: %v, want ErrEmailTaken", err)
+	}
+	if len(chat.deleted) != 0 {
+		t.Errorf("soft delete reached the chat backend: %v", chat.deleted)
+	}
+
+	// Second soft delete reports not found.
+	if err := DeleteUser(ctx, s, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("second soft delete: %v, want ErrNotFound", err)
+	}
+}
+
+func TestHardDeleteUser(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	chat := &fakeChat{}
+
+	u, err := Register(ctx, s, chat, "doomed@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	sess, err := IssueSession(ctx, s, u)
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+
+	if err := HardDeleteUser(ctx, s, chat, u.ID); err != nil {
+		t.Fatalf("HardDeleteUser: %v", err)
+	}
+
+	if _, err := s.AnyUserByID(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("document survived hard delete: %v", err)
+	}
+	if _, err := s.SessionByToken(ctx, sess.Token); !errors.Is(err, ErrNotFound) {
+		t.Errorf("session still valid after hard delete: %v", err)
 	}
 	if len(chat.deleted) != 1 || chat.deleted[0] != u.ID.Hex() {
 		t.Errorf("chat deleted = %v, want [%s]", chat.deleted, u.ID.Hex())
 	}
 
-	// Deleting again reports not found and must not reach the chat backend.
-	before := len(chat.deleted)
-	if err := DeleteUser(ctx, s, chat, u.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("second delete: %v, want ErrNotFound", err)
-	}
-	if len(chat.deleted) != before {
-		t.Error("failed delete must not be mirrored")
-	}
-
-	// A failing chat backend must not fail the deletion.
+	// Hard delete also purges a soft-deleted user.
 	u2, err := Register(ctx, s, nil, "doomed2@example.com", "secret123", permissions.RoleUser)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := DeleteUser(ctx, s, &fakeChat{fail: true}, u2.ID); err != nil {
-		t.Errorf("DeleteUser with failing chat backend: %v, want success", err)
+	if err := DeleteUser(ctx, s, u2.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if err := HardDeleteUser(ctx, s, &fakeChat{fail: true}, u2.ID); err != nil {
+		t.Errorf("hard delete of soft-deleted user (failing chat): %v, want success", err)
+	}
+	if _, err := s.AnyUserByID(ctx, u2.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("document survived purge: %v", err)
 	}
 }
 

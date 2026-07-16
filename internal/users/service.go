@@ -113,10 +113,18 @@ func UpdateUser(ctx context.Context, s *Storage, id bson.ObjectID, p UpdateUserP
 	return u, nil
 }
 
-// DeleteUser removes the user, all their sessions and (best-effort, same
-// policy as mirroring in Register) the mirrored chat account.
-// Shared by the HTTP handler and the gochactrl CLI.
-func DeleteUser(ctx context.Context, s *Storage, chat ChatBackend, id bson.ObjectID) error {
+// DeleteUser soft-deletes the user: sets deleted_at and invalidates all
+// their sessions. The default deletion everywhere (HTTP and CLI).
+// Deliberately does NOT touch the chat backend — the Ethora mirror
+// survives a soft delete.
+func DeleteUser(ctx context.Context, s *Storage, id bson.ObjectID) error {
+	return s.SoftDeleteUser(ctx, id)
+}
+
+// HardDeleteUser permanently removes the user, all their sessions and
+// (best-effort, same policy as mirroring in Register) the mirrored chat
+// account. Only reachable via gochactrl delete --hard.
+func HardDeleteUser(ctx context.Context, s *Storage, chat ChatBackend, id bson.ObjectID) error {
 	if err := s.DeleteUser(ctx, id); err != nil {
 		return err
 	}

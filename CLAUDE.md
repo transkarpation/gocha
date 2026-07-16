@@ -79,6 +79,15 @@ Layering inside `internal/users` (and mirrored in `internal/chats`):
   map sentinel errors to status codes (422 validation, 409 conflict,
   401 credentials/session, 500 with slog.ErrorContext).
 
+User deletion is soft by default: `users.DeleteUser` sets `deleted_at`, kills
+sessions and deliberately does NOT touch the Ethora mirror. All read paths
+(`UserByEmail/ID`, `ListUsers`, `CountExisting`, `UpdateUser`) filter
+soft-deleted users out via the `notDeleted` clause — a soft-deleted user's
+email stays taken (unique index still sees the document). Permanent removal
+(`users.HardDeleteUser`, incl. Ethora) exists only behind
+`gochactrl delete --hard`; the `Any*` storage lookups bypass the filter so
+`--hard` can purge already-soft-deleted users. `delete-all` is always hard.
+
 Roles and permissions (`internal/permissions`): the single registry of roles
 (`admin`, `user`) and per-entity permissions (`chats:create`, ...). **Every new
 entity exposed over HTTP must define its permission set in this package and

@@ -55,7 +55,8 @@ func usage() {
 Commands:
   register   create a new user (--role admin|user, default user)
   login      verify credentials and issue a session token
-  delete     delete a user by --id or --email (no permission checks)
+  delete     soft-delete a user by --id or --email (no permission checks);
+             --hard removes permanently including the Ethora mirror
   list       list users (--limit, --offset; no permission checks)
   delete-all delete ALL users and sessions (requires --yes)
 
@@ -149,6 +150,7 @@ func runDelete(args []string) error {
 	fs := flag.NewFlagSet("delete", flag.ExitOnError)
 	id := fs.String("id", "", "user id in hex")
 	email := fs.String("email", "", "user email (alternative to --id)")
+	hard := fs.Bool("hard", false, "permanently remove the user and their Ethora mirror (default: soft delete)")
 	configPath := fs.String("config", "config.yaml", "path to config file")
 	fs.Parse(args)
 
@@ -166,25 +168,33 @@ func runDelete(args []string) error {
 	}
 	defer cleanup()
 
+	// Any* lookups also find soft-deleted users, so --hard can purge them.
 	var u users.User
 	if *email != "" {
-		u, err = storage.UserByEmail(ctx, *email)
+		u, err = storage.AnyUserByEmail(ctx, *email)
 	} else {
 		var oid bson.ObjectID
 		oid, err = bson.ObjectIDFromHex(*id)
 		if err != nil {
 			return fmt.Errorf("invalid user id: %q", *id)
 		}
-		u, err = storage.UserByID(ctx, oid)
+		u, err = storage.AnyUserByID(ctx, oid)
 	}
 	if err != nil {
 		return err
 	}
 
-	if err := users.DeleteUser(ctx, storage, chat, u.ID); err != nil {
+	if *hard {
+		if err := users.HardDeleteUser(ctx, storage, chat, u.ID); err != nil {
+			return err
+		}
+		fmt.Printf("user permanently deleted: id=%s email=%s\n", u.ID.Hex(), u.Email)
+		return nil
+	}
+	if err := users.DeleteUser(ctx, storage, u.ID); err != nil {
 		return err
 	}
-	fmt.Printf("user deleted: id=%s email=%s\n", u.ID.Hex(), u.Email)
+	fmt.Printf("user soft-deleted: id=%s email=%s\n", u.ID.Hex(), u.Email)
 	return nil
 }
 

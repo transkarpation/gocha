@@ -137,7 +137,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Delete removes a user (admin permission is enforced by the route).
+// Delete soft-deletes a user (admin permission is enforced by the route).
+// The Ethora mirror is kept; permanent removal is gochactrl-only.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := bson.ObjectIDFromHex(chi.URLParam(r, "id"))
 	if err != nil {
@@ -145,7 +146,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch err := DeleteUser(r.Context(), h.storage, h.chat, id); {
+	switch err := DeleteUser(r.Context(), h.storage, id); {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "user not found")
 	case err != nil:

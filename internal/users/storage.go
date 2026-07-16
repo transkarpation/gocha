@@ -23,7 +23,12 @@ type User struct {
 	PasswordHash string           `bson:"password_hash"`
 	Role         permissions.Role `bson:"role"`
 	CreatedAt    time.Time        `bson:"created_at"`
+	DeletedAt    *time.Time       `bson:"deleted_at,omitempty"`
 }
+
+// notDeleted excludes soft-deleted users; alive users (including legacy
+// documents) have no deleted_at field at all.
+var notDeleted = bson.E{Key: "deleted_at", Value: bson.D{{Key: "$exists", Value: false}}}
 
 type Session struct {
 	Token     string        `bson:"token"`
@@ -81,10 +86,20 @@ func (s *Storage) CreateUser(ctx context.Context, email, passwordHash string, ro
 }
 
 func (s *Storage) UserByEmail(ctx context.Context, email string) (User, error) {
-	return s.findUser(ctx, bson.D{{Key: "email", Value: email}})
+	return s.findUser(ctx, bson.D{{Key: "email", Value: email}, notDeleted})
 }
 
 func (s *Storage) UserByID(ctx context.Context, id bson.ObjectID) (User, error) {
+	return s.findUser(ctx, bson.D{{Key: "_id", Value: id}, notDeleted})
+}
+
+// AnyUserByEmail and AnyUserByID also find soft-deleted users —
+// gochactrl needs them so `delete --hard` can purge a soft-deleted user.
+func (s *Storage) AnyUserByEmail(ctx context.Context, email string) (User, error) {
+	return s.findUser(ctx, bson.D{{Key: "email", Value: email}})
+}
+
+func (s *Storage) AnyUserByID(ctx context.Context, id bson.ObjectID) (User, error) {
 	return s.findUser(ctx, bson.D{{Key: "_id", Value: id}})
 }
 
@@ -107,7 +122,7 @@ func (s *Storage) ListUsers(ctx context.Context, limit, offset int64) ([]User, e
 		SetSort(bson.D{{Key: "created_at", Value: 1}}).
 		SetLimit(limit).
 		SetSkip(offset)
-	cur, err := s.users.Find(ctx, bson.D{}, opts)
+	cur, err := s.users.Find(ctx, bson.D{notDeleted}, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +161,7 @@ func (s *Storage) UpdateUser(ctx context.Context, id bson.ObjectID, upd UserUpda
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 	var u User
 	err := s.users.FindOneAndUpdate(ctx,
-		bson.D{{Key: "_id", Value: id}},
+		bson.D{{Key: "_id", Value: id}, notDeleted},
 		bson.D{{Key: "$set", Value: set}},
 		opts,
 	).Decode(&u)
@@ -164,8 +179,25 @@ func (s *Storage) UpdateUser(ctx context.Context, id bson.ObjectID, upd UserUpda
 	return u, nil
 }
 
-// DeleteUser removes the user and all their sessions, so outstanding
-// tokens stop working immediately.
+// SoftDeleteUser marks the user as deleted (deleted_at) and invalidates
+// their sessions. The document — and its email — stay in the collection,
+// so re-registering the same email keeps failing with ErrEmailTaken.
+func (s *Storage) SoftDeleteUser(ctx context.Context, id bson.ObjectID) error {
+	res, err := s.users.UpdateOne(ctx,
+		bson.D{{Key: "_id", Value: id}, notDeleted},
+		bson.D{{Key: "$set", Value: bson.D{{Key: "deleted_at", Value: time.Now().UTC()}}}},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return s.DeleteSessions(ctx, id)
+}
+
+// DeleteUser permanently removes the user and all their sessions, so
+// outstanding tokens stop working immediately.
 func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
 	res, err := s.users.DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
 	if err != nil {
@@ -215,9 +247,10 @@ func (s *Storage) DeleteSessions(ctx context.Context, userID bson.ObjectID) erro
 	return err
 }
 
-// CountExisting returns how many of the given user ids exist.
+// CountExisting returns how many of the given user ids exist and are
+// not soft-deleted.
 func (s *Storage) CountExisting(ctx context.Context, ids []bson.ObjectID) (int64, error) {
-	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}}
+	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}, notDeleted}
 	return s.users.CountDocuments(ctx, filter)
 }
 
