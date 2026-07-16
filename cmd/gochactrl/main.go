@@ -43,7 +43,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `Usage: backendctrl <command> [flags]
+	fmt.Fprintln(os.Stderr, `Usage: gochactrl <command> [flags]
 
 Commands:
   register   create a new user (--role admin|user, default user)

@@ -11,14 +11,14 @@ docker compose up -d
 # Build both binaries into bin/ (gitignored; module requires Go >= 1.23,
 # toolchain auto-downloads)
 go build -o bin/gocha.exe .
-go build -o bin/backendctrl.exe ./cmd/backendctrl
+go build -o bin/gochactrl.exe ./cmd/gochactrl
 
 # Run the server (flags: -config <path>, default config.yaml)
 go run .
 
 # CLI: create a user / issue a session token
-./bin/backendctrl.exe register --email a@b.com --password secret123
-./bin/backendctrl.exe login --email a@b.com --password secret123
+./bin/gochactrl.exe register --email a@b.com --password secret123
+./bin/gochactrl.exe login --email a@b.com --password secret123
 
 # Run tests (users/chats tests are integration tests — they need the
 # docker-compose Mongo running, and SKIP themselves if it is not)
@@ -59,7 +59,7 @@ Two entry points share the `internal/` packages:
 
 - `main.go` — HTTP server (chi). `setupRouter` wires all routes; protected
   routes live in the `r.Group` that applies `users.Handler.Auth`.
-- `cmd/backendctrl/main.go` — admin CLI (`register`, `login` subcommands).
+- `cmd/gochactrl/main.go` — admin CLI (`register`, `login` subcommands).
   Its results (`session_token=...`) print via `fmt` to stdout on purpose —
   scripts parse them; don't convert to slog.
 
@@ -79,7 +79,7 @@ Roles and permissions (`internal/permissions`): the single registry of roles
 entity exposed over HTTP must define its permission set in this package and
 guard its routes with `users.RequirePermission(...)` (applied after `Auth` via
 `r.With`).** HTTP self-registration always creates role `user`; admins are
-created only via `backendctrl register --role admin`. Users stored before roles
+created only via `gochactrl register --role admin`. Users stored before roles
 existed have no `role` field — storage normalizes that to `user` on read, and
 `permissions.Has` treats empty role as `user` too.
 
@@ -100,8 +100,6 @@ use. Server shutdown is graceful (signal.NotifyContext + srv.Shutdown).
 
 ## Notes
 
-- `task.txt` is a spec for a licensing system (Centrifugo PRO-style) that has
-  not been implemented yet — do not treat it as a description of current code.
 - Windows dev environment: Git Bash `kill` cannot deliver Ctrl+C to the native
   server binary (it hard-kills). To exercise graceful shutdown, send
   CTRL_BREAK_EVENT via WinAPI to a process started with CREATE_NEW_PROCESS_GROUP.

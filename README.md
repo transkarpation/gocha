@@ -76,10 +76,10 @@ HTTP self-registration always creates a plain `user`. Admins are created with
 the CLI:
 
 ```sh
-go build -o bin/backendctrl.exe ./cmd/backendctrl
+go build -o bin/gochactrl.exe ./cmd/gochactrl
 
-./bin/backendctrl.exe register --email admin@example.com --password secret123 --role admin
-./bin/backendctrl.exe login --email admin@example.com --password secret123
+./bin/gochactrl.exe register --email admin@example.com --password secret123 --role admin
+./bin/gochactrl.exe login --email admin@example.com --password secret123
 ```
 
 Role capabilities are defined in `internal/permissions` — the single registry

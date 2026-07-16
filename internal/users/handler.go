@@ -38,7 +38,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// HTTP self-registration always creates a plain user;
-	// admins are created via backendctrl.
+	// admins are created via gochactrl.
 	u, err := Register(r.Context(), h.storage, h.chat, req.Email, req.Password, permissions.RoleUser)
 	switch {
 	case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrPasswordTooShort):

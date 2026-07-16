@@ -27,7 +27,7 @@ var (
 )
 
 // Register validates credentials, hashes the password and stores the user.
-// Shared by the HTTP handler and the backendctrl CLI.
+// Shared by the HTTP handler and the gochactrl CLI.
 //
 // When chat is non-nil the new user is also mirrored into the external chat
 // platform. Mirroring is currently best-effort: a failure is logged and the
@@ -78,7 +78,7 @@ func Login(ctx context.Context, s *Storage, email, password string) (User, error
 }
 
 // IssueSession generates a fresh token and stores a session for the user.
-// Shared by the HTTP handlers and the backendctrl CLI.
+// Shared by the HTTP handlers and the gochactrl CLI.
 func IssueSession(ctx context.Context, s *Storage, u User) (Session, error) {
 	token, err := newSessionToken()
 	if err != nil {
