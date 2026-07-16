@@ -3,8 +3,10 @@ package users
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -17,6 +19,9 @@ const (
 	sessionTTL        = 24 * time.Hour
 	sessionCookieName = "session"
 	minPasswordLen    = 8
+
+	defaultUsersLimit = 50
+	maxUsersLimit     = 100
 )
 
 type Handler struct {
@@ -97,6 +102,48 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// List returns users, oldest first (admin permission is enforced by the
+// route). Password hashes never leave the handler.
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	limit := int64(defaultUsersLimit)
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 || n > maxUsersLimit {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("limit must be 1-%d", maxUsersLimit))
+			return
+		}
+		limit = n
+	}
+	offset := int64(0)
+	if v := r.URL.Query().Get("offset"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusUnprocessableEntity, "offset must be >= 0")
+			return
+		}
+		offset = n
+	}
+
+	list, err := h.storage.ListUsers(r.Context(), limit, offset)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "list users", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	out := make([]map[string]any, len(list))
+	for i, u := range list {
+		out[i] = map[string]any{
+			"id":         u.ID.Hex(),
+			"email":      u.Email,
+			"role":       u.Role,
+			"created_at": u.CreatedAt,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"users": out})
 }
 
 // Me returns the user resolved by the Auth middleware.

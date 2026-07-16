@@ -60,6 +60,7 @@ func setupRouter(storage *users.Storage, chatStorage *chats.Storage, chat users.
 	r.Group(func(r chi.Router) {
 		r.Use(h.Auth)
 		r.Get("/me", h.Me)
+		r.With(users.RequirePermission(permissions.UsersRead)).Get("/users", h.List)
 		r.With(users.RequirePermission(permissions.UsersDelete)).Delete("/users/{id}", h.Delete)
 		r.With(users.RequirePermission(permissions.ChatsCreate)).Post("/chats", ch.Create)
 		r.With(users.RequirePermission(permissions.ChatsDelete)).Delete("/chats/{id}", ch.Delete)

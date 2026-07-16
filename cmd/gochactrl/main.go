@@ -34,6 +34,8 @@ func main() {
 		err = runLogin(os.Args[2:])
 	case "delete":
 		err = runDelete(os.Args[2:])
+	case "list":
+		err = runList(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -52,6 +54,7 @@ Commands:
   register   create a new user (--role admin|user, default user)
   login      verify credentials and issue a session token
   delete     delete a user by --id or --email (no permission checks)
+  list       list users (--limit, --offset; no permission checks)
 
 Common flags:
   --email <addr> --password <pass> [--config <path>]
@@ -179,6 +182,37 @@ func runDelete(args []string) error {
 		return err
 	}
 	fmt.Printf("user deleted: id=%s email=%s\n", u.ID.Hex(), u.Email)
+	return nil
+}
+
+func runList(args []string) error {
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	limit := fs.Int64("limit", 50, "maximum users to print")
+	offset := fs.Int64("offset", 0, "users to skip")
+	configPath := fs.String("config", "config.yaml", "path to config file")
+	fs.Parse(args)
+
+	if *limit < 1 || *offset < 0 {
+		fs.Usage()
+		return fmt.Errorf("--limit must be >= 1 and --offset >= 0")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
+	defer cancel()
+
+	storage, _, cleanup, err := openStorage(ctx, *configPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	list, err := storage.ListUsers(ctx, *limit, *offset)
+	if err != nil {
+		return err
+	}
+	for _, u := range list {
+		fmt.Printf("%s\t%s\t%s\t%s\n", u.ID.Hex(), u.Role, u.CreatedAt.Format(time.RFC3339), u.Email)
+	}
 	return nil
 }
 

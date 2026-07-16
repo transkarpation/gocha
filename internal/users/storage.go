@@ -101,6 +101,28 @@ func (s *Storage) findUser(ctx context.Context, filter bson.D) (User, error) {
 	return u, err
 }
 
+// ListUsers returns users ordered by creation time (oldest first).
+func (s *Storage) ListUsers(ctx context.Context, limit, offset int64) ([]User, error) {
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: 1}}).
+		SetLimit(limit).
+		SetSkip(offset)
+	cur, err := s.users.Find(ctx, bson.D{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	list := []User{}
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if list[i].Role == "" {
+			list[i].Role = permissions.RoleUser
+		}
+	}
+	return list, nil
+}
+
 // DeleteUser removes the user and all their sessions, so outstanding
 // tokens stop working immediately.
 func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {

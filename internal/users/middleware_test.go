@@ -2,6 +2,7 @@ package users
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -136,6 +137,85 @@ func TestRequirePermission(t *testing.T) {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 		}
 	})
+}
+
+func TestListUsersRoute(t *testing.T) {
+	s, h := authTestEnv(t)
+	ctx := context.Background()
+
+	admin, err := Register(ctx, s, nil, "admin@example.com", "secret123", permissions.RoleAdmin)
+	if err != nil {
+		t.Fatalf("Register admin: %v", err)
+	}
+	user, err := Register(ctx, s, nil, "user@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register user: %v", err)
+	}
+	adminSess, err := IssueSession(ctx, s, admin)
+	if err != nil {
+		t.Fatalf("IssueSession admin: %v", err)
+	}
+	userSess, err := IssueSession(ctx, s, user)
+	if err != nil {
+		t.Fatalf("IssueSession user: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(h.Auth)
+		r.With(RequirePermission(permissions.UsersRead)).Get("/users", h.List)
+	})
+
+	do := func(path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := do("/users", userSess.Token); rec.Code != http.StatusForbidden {
+		t.Errorf("plain user list: status = %d, want 403", rec.Code)
+	}
+	if rec := do("/users?limit=0", adminSess.Token); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("bad limit: status = %d, want 422", rec.Code)
+	}
+
+	rec := do("/users", adminSess.Token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin list: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Users []map[string]any `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Users) != 2 {
+		t.Fatalf("got %d users, want 2", len(resp.Users))
+	}
+	if resp.Users[0]["email"] != "admin@example.com" || resp.Users[0]["role"] != "admin" {
+		t.Errorf("first user = %v, want admin (oldest first)", resp.Users[0])
+	}
+	for _, u := range resp.Users {
+		for k := range u {
+			if k == "password_hash" || k == "PasswordHash" {
+				t.Errorf("password hash leaked in response: %v", u)
+			}
+		}
+	}
+
+	if rec := do("/users?limit=1&offset=1", adminSess.Token); rec.Code == http.StatusOK {
+		var page struct {
+			Users []map[string]any `json:"users"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &page)
+		if len(page.Users) != 1 || page.Users[0]["email"] != "user@example.com" {
+			t.Errorf("pagination result = %v, want [user@example.com]", page.Users)
+		}
+	} else {
+		t.Errorf("paginated list: status = %d, want 200", rec.Code)
+	}
 }
 
 func TestDeleteUserRoute(t *testing.T) {

@@ -59,8 +59,8 @@ Two entry points share the `internal/` packages:
 
 - `main.go` — HTTP server (chi). `setupRouter` wires all routes; protected
   routes live in the `r.Group` that applies `users.Handler.Auth`.
-- `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`
-  subcommands; `delete` bypasses permission checks by design).
+- `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`, `list`
+  subcommands; `delete` and `list` bypass permission checks by design).
   Its results (`session_token=...`) print via `fmt` to stdout on purpose —
   scripts parse them; don't convert to slog.
 
