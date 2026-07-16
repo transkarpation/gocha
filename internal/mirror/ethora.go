@@ -36,8 +36,10 @@ func (e *Ethora) MirrorUser(ctx context.Context, u users.User) error {
 	if err != nil {
 		return fmt.Errorf("create ethora user: %w", err)
 	}
-	slog.DebugContext(ctx, "ethora user creation accepted",
-		"user_id", u.ID.Hex(), "job_id", job.JobID)
+	// Creation is async on the Ethora side: this logs acceptance of the
+	// job, which is as close to "created" as the API reports.
+	slog.InfoContext(ctx, "user created on ethora",
+		"user_id", u.ID.Hex(), "email", u.Email, "job_id", job.JobID)
 	return nil
 }
 
