@@ -199,6 +199,38 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"users": out})
 }
 
+// Restore brings a soft-deleted user back (admin permission is enforced
+// by the route).
+func (h *Handler) Restore(w http.ResponseWriter, r *http.Request) {
+	id, err := bson.ObjectIDFromHex(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid user id")
+		return
+	}
+
+	u, err := RestoreUser(r.Context(), h.storage, id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	case errors.Is(err, ErrNotDeleted):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		slog.ErrorContext(r.Context(), "restore user", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"id":         u.ID.Hex(),
+		"email":      u.Email,
+		"role":       u.Role,
+		"created_at": u.CreatedAt,
+	})
+}
+
 // Me returns the user resolved by the Auth middleware.
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	u, ok := FromContext(r.Context())

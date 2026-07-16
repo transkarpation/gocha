@@ -311,6 +311,69 @@ func TestUpdateUserRoute(t *testing.T) {
 	}
 }
 
+func TestRestoreUserRoute(t *testing.T) {
+	s, h := authTestEnv(t)
+	ctx := context.Background()
+
+	admin, err := Register(ctx, s, nil, "admin@example.com", "secret123", permissions.RoleAdmin)
+	if err != nil {
+		t.Fatalf("Register admin: %v", err)
+	}
+	victim, err := Register(ctx, s, nil, "victim@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register victim: %v", err)
+	}
+	adminSess, err := IssueSession(ctx, s, admin)
+	if err != nil {
+		t.Fatalf("IssueSession admin: %v", err)
+	}
+	victimSess, err := IssueSession(ctx, s, victim)
+	if err != nil {
+		t.Fatalf("IssueSession victim: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(h.Auth)
+		r.With(RequirePermission(permissions.UsersUpdate)).Post("/users/{id}/restore", h.Restore)
+	})
+
+	do := func(path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+	restoreURL := "/users/" + victim.ID.Hex() + "/restore"
+
+	if rec := do(restoreURL, victimSess.Token); rec.Code != http.StatusForbidden {
+		t.Errorf("plain user restore: status = %d, want 403", rec.Code)
+	}
+	if rec := do(restoreURL, adminSess.Token); rec.Code != http.StatusConflict {
+		t.Errorf("restore alive user: status = %d, want 409", rec.Code)
+	}
+
+	if err := DeleteUser(ctx, s, victim.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	rec := do(restoreURL, adminSess.Token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["email"] != "victim@example.com" {
+		t.Errorf("restored user = %v", resp)
+	}
+	if rec := do("/users/not-hex/restore", adminSess.Token); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("bad id: status = %d, want 422", rec.Code)
+	}
+	if rec := do("/users/000000000000000000000000/restore", adminSess.Token); rec.Code != http.StatusNotFound {
+		t.Errorf("missing user: status = %d, want 404", rec.Code)
+	}
+}
+
 func TestDeleteUserRoute(t *testing.T) {
 	s, h := authTestEnv(t)
 	ctx := context.Background()

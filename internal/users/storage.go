@@ -15,6 +15,7 @@ import (
 var (
 	ErrEmailTaken = errors.New("email already registered")
 	ErrNotFound   = errors.New("not found")
+	ErrNotDeleted = errors.New("user is not deleted")
 )
 
 type User struct {
@@ -194,6 +195,35 @@ func (s *Storage) SoftDeleteUser(ctx context.Context, id bson.ObjectID) error {
 		return ErrNotFound
 	}
 	return s.DeleteSessions(ctx, id)
+}
+
+// RestoreUser clears deleted_at on a soft-deleted user and returns the
+// restored user. Restoring an alive user reports ErrNotDeleted.
+func (s *Storage) RestoreUser(ctx context.Context, id bson.ObjectID) (User, error) {
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var u User
+	err := s.users.FindOneAndUpdate(ctx,
+		bson.D{
+			{Key: "_id", Value: id},
+			{Key: "deleted_at", Value: bson.D{{Key: "$exists", Value: true}}},
+		},
+		bson.D{{Key: "$unset", Value: bson.D{{Key: "deleted_at", Value: ""}}}},
+		opts,
+	).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		// Distinguish "no such user" from "user is alive".
+		if _, lookupErr := s.AnyUserByID(ctx, id); lookupErr == nil {
+			return User{}, ErrNotDeleted
+		}
+		return User{}, ErrNotFound
+	}
+	if err != nil {
+		return User{}, err
+	}
+	if u.Role == "" {
+		u.Role = permissions.RoleUser
+	}
+	return u, nil
 }
 
 // DeleteUser permanently removes the user and all their sessions, so

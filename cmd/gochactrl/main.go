@@ -38,6 +38,8 @@ func main() {
 		err = runList(os.Args[2:])
 	case "delete-all":
 		err = runDeleteAll(os.Args[2:])
+	case "restore":
+		err = runRestore(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -57,6 +59,7 @@ Commands:
   login      verify credentials and issue a session token
   delete     soft-delete a user by --id or --email (no permission checks);
              --hard removes permanently including the Ethora mirror
+  restore    restore a soft-deleted user by --id or --email
   list       list users (--limit, --offset; no permission checks)
   delete-all delete ALL users and sessions (requires --yes)
 
@@ -195,6 +198,49 @@ func runDelete(args []string) error {
 		return err
 	}
 	fmt.Printf("user soft-deleted: id=%s email=%s\n", u.ID.Hex(), u.Email)
+	return nil
+}
+
+func runRestore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	id := fs.String("id", "", "user id in hex")
+	email := fs.String("email", "", "user email (alternative to --id)")
+	configPath := fs.String("config", "config.yaml", "path to config file")
+	fs.Parse(args)
+
+	if (*id == "") == (*email == "") {
+		fs.Usage()
+		return fmt.Errorf("exactly one of --id or --email is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
+	defer cancel()
+
+	storage, _, cleanup, err := openStorage(ctx, *configPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	oid := bson.ObjectID{}
+	if *email != "" {
+		u, err := storage.AnyUserByEmail(ctx, *email)
+		if err != nil {
+			return err
+		}
+		oid = u.ID
+	} else {
+		oid, err = bson.ObjectIDFromHex(*id)
+		if err != nil {
+			return fmt.Errorf("invalid user id: %q", *id)
+		}
+	}
+
+	u, err := users.RestoreUser(ctx, storage, oid)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("user restored: id=%s email=%s\n", u.ID.Hex(), u.Email)
 	return nil
 }
 

@@ -53,6 +53,7 @@ Authenticated (send `Authorization: Bearer <token>` or the `session` cookie):
 | `GET` | `/users` | `users:read` (admin only) | list users, oldest first (`?limit=`, `?offset=`) |
 | `PATCH` | `/users/{id}` | `users:update` (admin only) | partial update (`email`, `role`, `password`); password change logs the user out |
 | `DELETE` | `/users/{id}` | `users:delete` (admin only) | soft-delete a user (sets `deleted_at`, kills sessions; Ethora mirror is kept) |
+| `POST` | `/users/{id}/restore` | `users:update` (admin only) | restore a soft-deleted user (409 if not deleted) |
 | `POST` | `/chats` | `chats:create` | create a chat (`name`, `type`: `public`/`group`, `participants`: user ids) |
 | `DELETE` | `/chats/{id}` | `chats:delete` (admin only) | delete a chat |
 | `POST` | `/chats/{id}/messages` | `messages:create` | send a message (`text`) |
@@ -87,6 +88,9 @@ go build -o bin/gochactrl.exe ./cmd/gochactrl
 # soft-delete a user bypassing permission checks (direct DB access);
 # --hard removes permanently, including the Ethora mirror
 ./bin/gochactrl.exe delete --email someone@example.com   # or --id <hex>
+
+# restore a soft-deleted user
+./bin/gochactrl.exe restore --email someone@example.com  # or --id <hex>
 
 # list users (tab-separated: id, role, created_at, email)
 ./bin/gochactrl.exe list --limit 20 --offset 0

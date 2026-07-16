@@ -242,6 +242,52 @@ func TestDeleteUserIsSoft(t *testing.T) {
 	}
 }
 
+func TestRestoreUser(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	u, err := Register(ctx, s, nil, "phoenix@example.com", "secret123", permissions.RoleAdmin)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Restoring an alive user is a conflict.
+	if _, err := RestoreUser(ctx, s, u.ID); !errors.Is(err, ErrNotDeleted) {
+		t.Errorf("restore alive user: %v, want ErrNotDeleted", err)
+	}
+
+	if err := DeleteUser(ctx, s, u.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	restored, err := RestoreUser(ctx, s, u.ID)
+	if err != nil {
+		t.Fatalf("RestoreUser: %v", err)
+	}
+	if restored.DeletedAt != nil {
+		t.Error("deleted_at still set after restore")
+	}
+	if restored.Role != permissions.RoleAdmin {
+		t.Errorf("role = %q, want admin preserved", restored.Role)
+	}
+
+	// Fully functional again: visible, can log in.
+	if _, err := s.UserByID(ctx, u.ID); err != nil {
+		t.Errorf("UserByID after restore: %v", err)
+	}
+	if _, err := Login(ctx, s, "phoenix@example.com", "secret123"); err != nil {
+		t.Errorf("login after restore: %v", err)
+	}
+	if list, _ := s.ListUsers(ctx, 10, 0); len(list) != 1 {
+		t.Errorf("list after restore = %v, want the restored user", list)
+	}
+
+	// Restoring a missing user is not found.
+	if _, err := RestoreUser(ctx, s, bson.NewObjectID()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("restore missing user: %v, want ErrNotFound", err)
+	}
+}
+
 func TestHardDeleteUser(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()

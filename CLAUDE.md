@@ -87,6 +87,9 @@ email stays taken (unique index still sees the document). Permanent removal
 (`users.HardDeleteUser`, incl. Ethora) exists only behind
 `gochactrl delete --hard`; the `Any*` storage lookups bypass the filter so
 `--hard` can purge already-soft-deleted users. `delete-all` is always hard.
+Soft-deleted users can be restored (`POST /users/{id}/restore` under
+`users:update`, or `gochactrl restore`) — sessions are not resurrected,
+restoring an alive user is ErrNotDeleted (409).
 
 Roles and permissions (`internal/permissions`): the single registry of roles
 (`admin`, `user`) and per-entity permissions (`chats:create`, ...). **Every new

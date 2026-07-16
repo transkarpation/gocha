@@ -121,6 +121,14 @@ func DeleteUser(ctx context.Context, s *Storage, id bson.ObjectID) error {
 	return s.SoftDeleteUser(ctx, id)
 }
 
+// RestoreUser brings a soft-deleted user back to life. Sessions are not
+// restored (they were invalidated at deletion) — the user just logs in
+// again. The Ethora mirror was never touched, so nothing to redo there.
+// Shared by the HTTP handler and the gochactrl CLI.
+func RestoreUser(ctx context.Context, s *Storage, id bson.ObjectID) (User, error) {
+	return s.RestoreUser(ctx, id)
+}
+
 // HardDeleteUser permanently removes the user, all their sessions and
 // (best-effort, same policy as mirroring in Register) the mirrored chat
 // account. Only reachable via gochactrl delete --hard.
