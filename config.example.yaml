@@ -1,9 +1,14 @@
 # Application configuration template.
 # Copy to config.yaml (gitignored) and adjust for your environment.
-# Env overrides: APP_PORT, MONGO_URI, MONGO_DB.
+# Env overrides: APP_PORT, MONGO_URI, MONGO_DB, ETHORA_API_KEY, ETHORA_API_SECRET.
 server:
   port: 8080
 
 mongo:
   uri: mongodb://root:example@localhost:27017
   database: protected_server
+
+# Ethora API credentials (https://ethora.com); keep real values out of git
+ethora:
+  api_key: your-api-key
+  api_secret: your-api-secret
