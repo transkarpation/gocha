@@ -51,6 +51,7 @@ Authenticated (send `Authorization: Bearer <token>` or the `session` cookie):
 |---|---|---|---|
 | `GET` | `/me` | — | current user |
 | `GET` | `/users` | `users:read` (admin only) | list users, oldest first (`?limit=`, `?offset=`) |
+| `PATCH` | `/users/{id}` | `users:update` (admin only) | partial update (`email`, `role`, `password`); password change logs the user out |
 | `DELETE` | `/users/{id}` | `users:delete` (admin only) | delete a user (and their Ethora mirror) |
 | `POST` | `/chats` | `chats:create` | create a chat (`name`, `type`: `public`/`group`, `participants`: user ids) |
 | `DELETE` | `/chats/{id}` | `chats:delete` (admin only) | delete a chat |

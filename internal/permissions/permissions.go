@@ -33,6 +33,7 @@ const (
 // Users.
 const (
 	UsersRead   Permission = "users:read"
+	UsersUpdate Permission = "users:update"
 	UsersDelete Permission = "users:delete"
 )
 
@@ -45,6 +46,7 @@ var rolePermissions = map[Role]map[Permission]bool{
 		MessagesCreate: true,
 		MessagesRead:   true,
 		UsersRead:      true,
+		UsersUpdate:    true,
 		UsersDelete:    true,
 	},
 	RoleUser: {

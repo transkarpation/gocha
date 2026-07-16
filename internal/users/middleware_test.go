@@ -3,8 +3,10 @@ package users
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -215,6 +217,97 @@ func TestListUsersRoute(t *testing.T) {
 		}
 	} else {
 		t.Errorf("paginated list: status = %d, want 200", rec.Code)
+	}
+}
+
+func TestUpdateUserRoute(t *testing.T) {
+	s, h := authTestEnv(t)
+	ctx := context.Background()
+
+	admin, err := Register(ctx, s, nil, "admin@example.com", "secret123", permissions.RoleAdmin)
+	if err != nil {
+		t.Fatalf("Register admin: %v", err)
+	}
+	victim, err := Register(ctx, s, nil, "victim@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register victim: %v", err)
+	}
+	adminSess, err := IssueSession(ctx, s, admin)
+	if err != nil {
+		t.Fatalf("IssueSession admin: %v", err)
+	}
+	victimSess, err := IssueSession(ctx, s, victim)
+	if err != nil {
+		t.Fatalf("IssueSession victim: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(h.Auth)
+		r.With(RequirePermission(permissions.UsersUpdate)).Patch("/users/{id}", h.Update)
+	})
+
+	do := func(path, token, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+	victimURL := "/users/" + victim.ID.Hex()
+
+	if rec := do(victimURL, victimSess.Token, `{"role":"admin"}`); rec.Code != http.StatusForbidden {
+		t.Errorf("plain user update: status = %d, want 403", rec.Code)
+	}
+
+	rec := do(victimURL, adminSess.Token, `{"role":"admin"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("role update: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["role"] != "admin" {
+		t.Errorf("role = %v, want admin", resp["role"])
+	}
+	if u, _ := s.UserByID(ctx, victim.ID); u.Role != permissions.RoleAdmin {
+		t.Errorf("stored role = %q, want admin", u.Role)
+	}
+
+	validation := []struct {
+		name string
+		path string
+		body string
+		want int
+	}{
+		{"empty body", victimURL, `{}`, http.StatusUnprocessableEntity},
+		{"invalid email", victimURL, `{"email":"not-an-email"}`, http.StatusUnprocessableEntity},
+		{"short password", victimURL, `{"password":"123"}`, http.StatusUnprocessableEntity},
+		{"invalid role", victimURL, `{"role":"superuser"}`, http.StatusUnprocessableEntity},
+		{"duplicate email", victimURL, `{"email":"admin@example.com"}`, http.StatusConflict},
+		{"bad id", "/users/not-hex", `{"role":"user"}`, http.StatusUnprocessableEntity},
+		{"missing user", "/users/000000000000000000000000", `{"role":"user"}`, http.StatusNotFound},
+	}
+	for _, tt := range validation {
+		t.Run(tt.name, func(t *testing.T) {
+			if rec := do(tt.path, adminSess.Token, tt.body); rec.Code != tt.want {
+				t.Errorf("status = %d, want %d (body: %s)", rec.Code, tt.want, rec.Body.String())
+			}
+		})
+	}
+
+	// Password change invalidates the victim's sessions.
+	if rec := do(victimURL, adminSess.Token, `{"password":"newsecret123"}`); rec.Code != http.StatusOK {
+		t.Fatalf("password update: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, err := s.SessionByToken(ctx, victimSess.Token); !errors.Is(err, ErrNotFound) {
+		t.Errorf("victim session survived password change: %v", err)
+	}
+	if _, err := Login(ctx, s, "victim@example.com", "newsecret123"); err != nil {
+		t.Errorf("login with new password: %v", err)
+	}
+	if _, err := Login(ctx, s, "victim@example.com", "secret123"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("login with old password: %v, want ErrInvalidCredentials", err)
 	}
 }
 

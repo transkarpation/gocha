@@ -85,6 +85,58 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.respondWithSession(w, r, u, http.StatusOK)
 }
 
+type updateUserRequest struct {
+	Email    *string           `json:"email"`
+	Password *string           `json:"password"`
+	Role     *permissions.Role `json:"role"`
+}
+
+// Update partially updates a user (admin permission is enforced by the
+// route). Changing the password logs the user out everywhere.
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := bson.ObjectIDFromHex(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid user id")
+		return
+	}
+
+	var req updateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	u, err := UpdateUser(r.Context(), h.storage, id, UpdateUserParams{
+		Email:    req.Email,
+		Password: req.Password,
+		Role:     req.Role,
+	})
+	switch {
+	case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrPasswordTooShort),
+		errors.Is(err, ErrInvalidRole), errors.Is(err, ErrNothingToUpdate):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	case errors.Is(err, ErrEmailTaken):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	case err != nil:
+		slog.ErrorContext(r.Context(), "update user", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"id":         u.ID.Hex(),
+		"email":      u.Email,
+		"role":       u.Role,
+		"created_at": u.CreatedAt,
+	})
+}
+
 // Delete removes a user (admin permission is enforced by the route).
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := bson.ObjectIDFromHex(chi.URLParam(r, "id"))

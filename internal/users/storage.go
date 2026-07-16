@@ -123,6 +123,47 @@ func (s *Storage) ListUsers(ctx context.Context, limit, offset int64) ([]User, e
 	return list, nil
 }
 
+// UserUpdate lists the fields UpdateUser changes; nil fields are kept as is.
+type UserUpdate struct {
+	Email        *string
+	PasswordHash *string
+	Role         *permissions.Role
+}
+
+// UpdateUser applies the partial update and returns the updated user.
+func (s *Storage) UpdateUser(ctx context.Context, id bson.ObjectID, upd UserUpdate) (User, error) {
+	set := bson.D{}
+	if upd.Email != nil {
+		set = append(set, bson.E{Key: "email", Value: *upd.Email})
+	}
+	if upd.PasswordHash != nil {
+		set = append(set, bson.E{Key: "password_hash", Value: *upd.PasswordHash})
+	}
+	if upd.Role != nil {
+		set = append(set, bson.E{Key: "role", Value: *upd.Role})
+	}
+
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var u User
+	err := s.users.FindOneAndUpdate(ctx,
+		bson.D{{Key: "_id", Value: id}},
+		bson.D{{Key: "$set", Value: set}},
+		opts,
+	).Decode(&u)
+	switch {
+	case errors.Is(err, mongo.ErrNoDocuments):
+		return User{}, ErrNotFound
+	case mongo.IsDuplicateKeyError(err):
+		return User{}, ErrEmailTaken
+	case err != nil:
+		return User{}, err
+	}
+	if u.Role == "" {
+		u.Role = permissions.RoleUser
+	}
+	return u, nil
+}
+
 // DeleteUser removes the user and all their sessions, so outstanding
 // tokens stop working immediately.
 func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
@@ -133,7 +174,12 @@ func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
 	if res.DeletedCount == 0 {
 		return ErrNotFound
 	}
-	_, err = s.sessions.DeleteMany(ctx, bson.D{{Key: "user_id", Value: id}})
+	return s.DeleteSessions(ctx, id)
+}
+
+// DeleteSessions invalidates all sessions of the user.
+func (s *Storage) DeleteSessions(ctx context.Context, userID bson.ObjectID) error {
+	_, err := s.sessions.DeleteMany(ctx, bson.D{{Key: "user_id", Value: userID}})
 	return err
 }
 

@@ -27,6 +27,7 @@ var (
 	ErrPasswordTooShort   = errors.New("password must be at least 8 characters")
 	ErrInvalidRole        = errors.New(`role must be "admin" or "user"`)
 	ErrInvalidCredentials = errors.New("invalid email or password")
+	ErrNothingToUpdate    = errors.New("nothing to update")
 )
 
 // Register validates credentials, hashes the password and stores the user.
@@ -59,6 +60,52 @@ func Register(ctx context.Context, s *Storage, chat ChatBackend, email, password
 		if err := chat.MirrorUser(ctx, u); err != nil {
 			slog.WarnContext(ctx, "mirror user to chat backend",
 				"user_id", u.ID.Hex(), "error", err)
+		}
+	}
+	return u, nil
+}
+
+// UpdateUserParams is a partial update: nil fields stay unchanged.
+type UpdateUserParams struct {
+	Email    *string
+	Password *string
+	Role     *permissions.Role
+}
+
+// UpdateUser validates and applies the partial update. Changing the
+// password invalidates all of the user's sessions.
+func UpdateUser(ctx context.Context, s *Storage, id bson.ObjectID, p UpdateUserParams) (User, error) {
+	upd := UserUpdate{Email: p.Email, Role: p.Role}
+	if p.Email != nil {
+		if _, err := mail.ParseAddress(*p.Email); err != nil {
+			return User{}, ErrInvalidEmail
+		}
+	}
+	if p.Role != nil && !permissions.ValidRole(*p.Role) {
+		return User{}, ErrInvalidRole
+	}
+	if p.Password != nil {
+		if len(*p.Password) < minPasswordLen {
+			return User{}, ErrPasswordTooShort
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(*p.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return User{}, err
+		}
+		hs := string(hash)
+		upd.PasswordHash = &hs
+	}
+	if upd == (UserUpdate{}) {
+		return User{}, ErrNothingToUpdate
+	}
+
+	u, err := s.UpdateUser(ctx, id, upd)
+	if err != nil {
+		return User{}, err
+	}
+	if p.Password != nil {
+		if err := s.DeleteSessions(ctx, u.ID); err != nil {
+			return User{}, err
 		}
 	}
 	return u, nil
