@@ -22,6 +22,7 @@ import (
 	"github.com/transkarpation/gocha/internal/mirror"
 	"github.com/transkarpation/gocha/internal/permissions"
 	"github.com/transkarpation/gocha/internal/users"
+	"github.com/transkarpation/gocha/internal/xmppclient"
 	"github.com/transkarpation/gocha/pkg/ethora"
 )
 
@@ -71,6 +72,28 @@ func setupRouter(storage *users.Storage, chatStorage *chats.Storage, chat users.
 	})
 
 	return r
+}
+
+// startSystemXMPP connects the system account to the XMPP server in its
+// own goroutine (skipped when the endpoint is not configured or the system
+// account has no stored credentials — e.g. mirroring is disabled).
+func startSystemXMPP(ctx context.Context, wsURL string, storage *users.Storage, sysUser users.User) {
+	if wsURL == "" {
+		slog.Info("xmpp connection disabled: no websocket url configured")
+		return
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, mongoTimeout)
+	defer cancel()
+	creds, err := storage.ChatCredentialsByUserID(lookupCtx, sysUser.ID)
+	if err != nil {
+		slog.Warn("xmpp connection disabled: no chat credentials for system user", "error", err)
+		return
+	}
+	go func() {
+		if err := xmppclient.Run(ctx, wsURL, creds.XMPPUsername, creds.XMPPPassword); err != nil {
+			slog.Error("xmpp client stopped", "error", err)
+		}
+	}()
 }
 
 func handleHealthcheck(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +162,8 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	startSystemXMPP(ctx, cfg.Ethora.XMPPWSURL, storage, sysUser)
 
 	go func() {
 		slog.Info("server listening", "addr", addr)

@@ -43,6 +43,9 @@ Priority: **env vars > `config.yaml` > built-in defaults**.
 | HTTP port | `server.port` | `APP_PORT` | `8080` |
 | Mongo URI | `mongo.uri` | `MONGO_URI` | local docker-compose instance |
 | Mongo database | `mongo.database` | `MONGO_DB` | `protected_server` |
+| Ethora API | `ethora.base_url` | `ETHORA_BASE_URL` | `https://api.chat.ethora.com/` |
+| Ethora credentials | `ethora.api_key` / `ethora.api_secret` | `ETHORA_API_KEY` / `ETHORA_API_SECRET` | unset (mirroring disabled) |
+| XMPP websocket | `ethora.xmpp_ws_url` | `ETHORA_XMPP_WS_URL` | `wss://xmpp.chat.ethora.com/ws` |
 
 `config.yaml` is gitignored; copy it from `config.example.yaml`. A missing
 file is fine — defaults are used. Both binaries accept `-config <path>`.
@@ -77,7 +80,9 @@ user. Sessions live 24h and are issued on register and login.
 On startup the server ensures a `system@gocha.internal` account exists —
 service messages are sent on its behalf. Its password is random and thrown
 away, so it cannot be logged into; if soft-deleted, the next server start
-restores it.
+restores it. The system account then connects to the Ethora XMPP server
+over websocket (`ethora.xmpp_ws_url`) in a background goroutine and stays
+connected, reconnecting automatically.
 
 ### Example
 

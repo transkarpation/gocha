@@ -117,6 +117,15 @@ mirror); only a targeted `gochactrl delete --email ... --hard` removes it.
 `users.InitSystemUser` (CLI `init-system`) is the non-idempotent variant:
 create or fail with ErrSystemExists.
 
+XMPP: after startup the system account connects to the Ethora XMPP server
+over websocket (`internal/xmppclient`, library gosrc.io/xmpp — picked for
+its built-in RFC 7395 websocket transport and reconnecting StreamManager)
+in its own goroutine, authenticating with the stored chat credentials; the
+JID is `<xmpp_username>@<host of ethora.xmpp_ws_url>`. Every (re)connect is
+logged. Skipped with a log line when `ethora.xmpp_ws_url` is empty or the
+system account has no credentials; the goroutine stops via the same signal
+context that drives graceful shutdown.
+
 Roles and permissions (`internal/permissions`): the single registry of roles
 (`admin`, `user`) and per-entity permissions (`chats:create`, ...). **Every new
 entity exposed over HTTP must define its permission set in this package and
