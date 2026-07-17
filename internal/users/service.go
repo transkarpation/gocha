@@ -88,7 +88,7 @@ func InitSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, er
 func createSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, error) {
 	// The password is never needed again: the server acts through
 	// storage directly, not through login.
-	password, err := newSessionToken()
+	password, err := randomSecret()
 	if err != nil {
 		return User{}, err
 	}
@@ -151,7 +151,8 @@ type UpdateUserParams struct {
 }
 
 // UpdateUser validates and applies the partial update. Changing the
-// password invalidates all of the user's sessions.
+// password invalidates all access tokens issued so far (storage moves
+// tokens_valid_from in the same write).
 func UpdateUser(ctx context.Context, s *Storage, id bson.ObjectID, p UpdateUserParams) (User, error) {
 	upd := UserUpdate{Email: p.Email, Role: p.Role}
 	if p.Email != nil {
@@ -177,37 +178,29 @@ func UpdateUser(ctx context.Context, s *Storage, id bson.ObjectID, p UpdateUserP
 		return User{}, ErrNothingToUpdate
 	}
 
-	u, err := s.UpdateUser(ctx, id, upd)
-	if err != nil {
-		return User{}, err
-	}
-	if p.Password != nil {
-		if err := s.DeleteSessions(ctx, u.ID); err != nil {
-			return User{}, err
-		}
-	}
-	return u, nil
+	return s.UpdateUser(ctx, id, upd)
 }
 
-// DeleteUser soft-deletes the user: sets deleted_at and invalidates all
-// their sessions. The default deletion everywhere (HTTP and CLI).
-// Deliberately does NOT touch the chat backend — the Ethora mirror
-// survives a soft delete.
+// DeleteUser soft-deletes the user: sets deleted_at, which also locks out
+// their access tokens (Auth resolves every token against storage). The
+// default deletion everywhere (HTTP and CLI). Deliberately does NOT touch
+// the chat backend — the Ethora mirror survives a soft delete.
 func DeleteUser(ctx context.Context, s *Storage, id bson.ObjectID) error {
 	return s.SoftDeleteUser(ctx, id)
 }
 
-// RestoreUser brings a soft-deleted user back to life. Sessions are not
-// restored (they were invalidated at deletion) — the user just logs in
-// again. The Ethora mirror was never touched, so nothing to redo there.
+// RestoreUser brings a soft-deleted user back to life. Access tokens
+// issued before the deletion start working again if they have not expired
+// — restoring undoes the lockout by design. The Ethora mirror was never
+// touched, so nothing to redo there.
 // Shared by the HTTP handler and the gochactrl CLI.
 func RestoreUser(ctx context.Context, s *Storage, id bson.ObjectID) (User, error) {
 	return s.RestoreUser(ctx, id)
 }
 
-// HardDeleteUser permanently removes the user, all their sessions and
-// (best-effort, same policy as mirroring in Register) the mirrored chat
-// account. Only reachable via gochactrl delete --hard.
+// HardDeleteUser permanently removes the user and (best-effort, same
+// policy as mirroring in Register) the mirrored chat account.
+// Only reachable via gochactrl delete --hard.
 func HardDeleteUser(ctx context.Context, s *Storage, chat ChatBackend, id bson.ObjectID) error {
 	if err := s.DeleteUser(ctx, id); err != nil {
 		return err
@@ -221,9 +214,9 @@ func HardDeleteUser(ctx context.Context, s *Storage, chat ChatBackend, id bson.O
 	return nil
 }
 
-// DeleteAllUsers wipes every user and session and (best-effort) all
-// mirrored chat accounts. The system account is never deleted — neither
-// here nor its chat mirror. Returns the number of deleted users.
+// DeleteAllUsers wipes every user and (best-effort) all mirrored chat
+// accounts. The system account is never deleted — neither here nor its
+// chat mirror. Returns the number of deleted users.
 // Used by gochactrl only — there is deliberately no HTTP route for this.
 func DeleteAllUsers(ctx context.Context, s *Storage, chat ChatBackend) (int64, error) {
 	ids, err := s.AllUserIDs(ctx)
@@ -275,17 +268,9 @@ func Login(ctx context.Context, s *Storage, email, password string) (User, error
 	return u, nil
 }
 
-// IssueSession generates a fresh token and stores a session for the user.
-// Shared by the HTTP handlers and the gochactrl CLI.
-func IssueSession(ctx context.Context, s *Storage, u User) (Session, error) {
-	token, err := newSessionToken()
-	if err != nil {
-		return Session{}, err
-	}
-	return s.CreateSession(ctx, u.ID, token, SessionTTL)
-}
-
-func newSessionToken() (string, error) {
+// randomSecret returns 32 random bytes as hex — used for the system
+// account's throwaway password.
+func randomSecret() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err

@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	// SessionTTL is how long a session and its access token stay valid.
-	SessionTTL = 24 * time.Hour
+	// TokenTTL is how long an issued access token stays valid.
+	TokenTTL = 24 * time.Hour
 
-	sessionCookieName = "session"
-	minPasswordLen    = 8
+	accessTokenCookieName = "access_token"
+	minPasswordLen        = 8
 
 	defaultUsersLimit = 50
 	maxUsersLimit     = 100
@@ -64,7 +64,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondWithSession(w, r, u, http.StatusCreated)
+	h.respondWithToken(w, r, u, http.StatusCreated)
 }
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +85,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondWithSession(w, r, u, http.StatusOK)
+	h.respondWithToken(w, r, u, http.StatusOK)
 }
 
 type updateUserRequest struct {
@@ -249,44 +249,38 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// respondWithSession creates a session for the user, signs an access
-// token, sets the cookie and writes the JSON response. Shared by Register
-// and Login.
+// respondWithToken signs an access token for the user, sets the cookie
+// and writes the JSON response. Shared by Register and Login.
 //
 // The response also carries the XMPP credentials of the user's mirrored
 // chat account so the client can connect to the XMPP server itself. They
 // are omitted when the user has none (mirroring disabled or it failed at
 // registration) — that must not break signing in.
-func (h *Handler) respondWithSession(w http.ResponseWriter, r *http.Request, u User, status int) {
-	sess, err := IssueSession(r.Context(), h.storage, u)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "issue session", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-
-	token, err := IssueToken(u, h.jwtSecret, SessionTTL)
+func (h *Handler) respondWithToken(w http.ResponseWriter, r *http.Request, u User, status int) {
+	token, err := IssueToken(u, h.jwtSecret, TokenTTL)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "issue access token", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	expiresAt := time.Now().UTC().Add(TokenTTL)
 
+	// Browsers get the token in an HttpOnly cookie so page scripts cannot
+	// read it; everyone else sends it as a Bearer header.
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    sess.Token,
+		Name:     accessTokenCookieName,
+		Value:    token,
 		Path:     "/",
-		Expires:  sess.ExpiresAt,
+		Expires:  expiresAt,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
 
 	body := map[string]any{
-		"id":            u.ID.Hex(),
-		"email":         u.Email,
-		"session_token": sess.Token,
-		"access_token":  token,
-		"expires_at":    sess.ExpiresAt,
+		"id":           u.ID.Hex(),
+		"email":        u.Email,
+		"access_token": token,
+		"expires_at":   expiresAt,
 	}
 	switch creds, err := h.storage.ChatCredentialsByUserID(r.Context(), u.ID); {
 	case err == nil:

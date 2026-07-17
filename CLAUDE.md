@@ -19,7 +19,7 @@ go build -o bin/gocha.exe .
 go build -o bin/gochactrl.exe ./cmd/gochactrl
 go run .
 
-# CLI: create a user / issue a session token
+# CLI: create a user / issue an access token
 ./bin/gochactrl.exe register --email a@b.com --password secret123
 ./bin/gochactrl.exe login --email a@b.com --password secret123
 
@@ -81,7 +81,7 @@ Two entry points share the `internal/` packages:
   `--yes`, `system` prints the system account incl. its XMPP credentials,
   `init-system` creates it and errors with ErrSystemExists when it is
   already there). There is deliberately no HTTP route for bulk deletion.
-  Its results (`session_token=...`) print via `fmt` to stdout on purpose —
+  Its results (`access_token=...`) print via `fmt` to stdout on purpose —
   scripts parse them; don't convert to slog.
 
 Layering inside `internal/users` (and mirrored in `internal/chats`):
@@ -89,14 +89,16 @@ Layering inside `internal/users` (and mirrored in `internal/chats`):
 - `storage.go` — Mongo collections and queries only. Typed sentinel errors
   (`ErrNotFound`, `ErrEmailTaken`) instead of driver errors.
 - `service.go` — business logic shared by HTTP and CLI (`Register`, `Login`,
-  `IssueSession`): validation, bcrypt hashing, token generation. New logic
+  `UpdateUser`): validation, bcrypt hashing, mirroring policy. New logic
   used by both entry points belongs here, not in handlers.
 - `handler.go` / `middleware.go` — HTTP layer: decode JSON, call service,
   map sentinel errors to status codes (422 validation, 409 conflict,
-  401 credentials/session, 500 with slog.ErrorContext).
+  401 credentials/token, 500 with slog.ErrorContext).
 
-User deletion is soft by default: `users.DeleteUser` sets `deleted_at`, kills
-sessions and deliberately does NOT touch the Ethora mirror. All read paths
+User deletion is soft by default: `users.DeleteUser` sets `deleted_at` (which
+also locks out the user's access tokens, since Auth resolves every token
+through `UserByID`) and deliberately does NOT touch the Ethora mirror.
+All read paths
 (`UserByEmail/ID`, `ListUsers`, `CountExisting`, `UpdateUser`) filter
 soft-deleted users out via the `notDeleted` clause — a soft-deleted user's
 email stays taken (unique index still sees the document). Permanent removal
@@ -104,16 +106,16 @@ email stays taken (unique index still sees the document). Permanent removal
 `gochactrl delete --hard`; the `Any*` storage lookups bypass the filter so
 `--hard` can purge already-soft-deleted users. `delete-all` is always hard.
 Soft-deleted users can be restored (`POST /users/{id}/restore` under
-`users:update`, or `gochactrl restore`) — sessions are not resurrected,
-restoring an alive user is ErrNotDeleted (409).
+`users:update`, or `gochactrl restore`) — unexpired tokens issued before the
+deletion work again, restoring an alive user is ErrNotDeleted (409).
 
 System account: server startup calls `users.EnsureSystemUser` — an
 idempotent ensure of `users.SystemEmail` (`system@gocha.internal`), the
 account service messages are sent from. Created with a thrown-away random
-password (login impossible; the server acts via storage, not sessions),
+password (login impossible; the server acts via storage, not tokens),
 mirrored to Ethora like any user, restored automatically if soft-deleted.
-`delete-all` never touches it (nor its sessions, chat credentials or Ethora
-mirror); only a targeted `gochactrl delete --email ... --hard` removes it.
+`delete-all` never touches it (nor its chat credentials or Ethora mirror);
+only a targeted `gochactrl delete --email ... --hard` removes it.
 `users.InitSystemUser` (CLI `init-system`) is the non-idempotent variant:
 create or fail with ErrSystemExists.
 
@@ -135,38 +137,40 @@ created only via `gochactrl register --role admin`. Users stored before roles
 existed have no `role` field — storage normalizes that to `user` on read, and
 `permissions.Has` treats empty role as `user` too.
 
-Sign-in payload: `Register`/`Login` (HTTP and `gochactrl login`) hand the
-client a session token, a JWT access token and the XMPP credentials of its
-mirrored account (`xmpp_username`/`xmpp_password`, omitted when the user has
-no mirror — that must never break signing in). The JWT is signed HS256 with
-`auth.jwt_secret` (env `JWT_SECRET`; claims sub/email/role/iat/exp, TTL
-`users.SessionTTL`) — deliberately our own key, NOT `ethora.api_secret`:
-never reuse a third party's credential as our signing key. The secret has no
-default and `main` refuses to start without it (an empty HS256 key makes
-tokens forgeable). `users.IssueToken` in `token.go` is the only signer.
-Sessions: opaque random tokens (not JWT) stored in the `sessions` collection.
-`Auth` middleware accepts `Authorization: Bearer <token>` (priority) or the
-`session` HttpOnly cookie, loads the user and stores it in the request context;
-handlers read it with `users.FromContext(ctx)`. Session expiry is enforced in
-the `SessionByToken` query (`expires_at > now`) — the Mongo TTL index cleans up
-lazily and must not be relied on for correctness.
+Authentication is JWT-only: there are no sessions and no `sessions`
+collection (both removed), so nothing is stored server-side per login.
 
-`Auth` takes either credential: `users.Handler.authenticate` treats a
-`x.y.z`-shaped token as a JWT (session tokens are hex, so the shape is
-unambiguous and no lookup is wasted) and verifies it with `users.ParseToken`;
-anything else goes through the session lookup. `ParseToken` pins HS256
-(`jwt.WithValidMethods` — otherwise `alg: none` would authenticate anyone)
-and requires `exp`. Only the `sub` claim is trusted: role and email always
-come from storage, so a token minted before a demotion or a soft delete
-carries no stale powers. The trade-off to remember: sessions die on password
-change, an access token stays valid until `exp` — it is stateless by design;
-add a token version on the user document if that ever needs to change.
+Sign-in payload: `Register`/`Login` (HTTP and `gochactrl login`) hand the
+client an access token and the XMPP credentials of its mirrored account
+(`xmpp_username`/`xmpp_password`, omitted when the user has no mirror — that
+must never break signing in). The token is signed HS256 with
+`auth.jwt_secret` (env `JWT_SECRET`; claims sub/email/role/ver/iat/exp, TTL
+`users.TokenTTL`) — deliberately our own key, NOT `ethora.api_secret`: never
+reuse a third party's credential as our signing key. The secret has no
+default and `main` refuses to start without it (an empty HS256 key makes
+tokens forgeable). `users.IssueToken` in `token.go` is the only signer; the
+token also goes out in the `access_token` HttpOnly cookie for browsers.
+
+`Auth` reads the token from `Authorization: Bearer <token>` (priority) or
+that cookie, verifies it with `users.ParseToken`, loads the user and puts it
+in the request context; handlers read it with `users.FromContext(ctx)`.
+`ParseToken` pins HS256 (`jwt.WithValidMethods` — otherwise `alg: none`
+would authenticate anyone) and requires `exp`.
+
+Revoking a stateless token is what `User.TokenVersion` (`token_version`,
+absent = 0) is for: every token carries `ver`, `Auth` rejects a mismatch,
+and a password change `$inc`s it in the same write as the new hash. Do NOT
+replace this with comparing `iat` against a revocation timestamp — `iat` is
+truncated to whole seconds, so a token issued in the same second as the
+change is judged wrongly (TestUpdateUserRoute caught exactly that). Only
+`sub` and `ver` are trusted: role and email always come from storage, so a
+token minted before a demotion or a soft delete carries no stale powers.
 
 Collections and their invariants (created in `users.NewStorage`):
-`users` — unique index on `email`; `sessions` — TTL index on `expires_at`;
+`users` — unique index on `email`;
 `chat_credentials` — XMPP credentials of the mirrored account, `_id` = user id;
 `chats` — participants are validated against `users` at creation time and the
-creator from the session is always included.
+creator from the request context is always included.
 
 Startup: `slog.SetDefault` in `main` configures the text logger all packages
 use. Server shutdown is graceful (signal.NotifyContext + srv.Shutdown).

@@ -1,6 +1,6 @@
 # gocha
 
-A small chat server in Go: session-based authentication, admin/user roles with
+A small chat server in Go: JWT authentication, admin/user roles with
 a central permission registry, chats and messages stored in MongoDB.
 
 Built with [chi](https://github.com/go-chi/chi), the official
@@ -67,7 +67,6 @@ Both return the same payload:
 {
   "id": "6a59d151811e1b8ac4bdd3fa",
   "email": "a@b.com",
-  "session_token": "f31d1bea…",
   "access_token": "eyJhbGciOiJIUzI1NiIs…",
   "expires_at": "2026-07-18T06:53:05Z",
   "xmpp_username": "6a58fbd8…_6a59d151…",
@@ -76,24 +75,26 @@ Both return the same payload:
 ```
 
 `access_token` is a JWT (HS256, `auth.jwt_secret`) with `sub`, `email`,
-`role`, `iat` and `exp` claims. Either it or `session_token` authenticates
-API requests. The `xmpp_*` fields are the credentials of the user's mirrored
-chat account — connect to `ethora.xmpp_ws_url` with them; they are absent
-when the user has no mirror.
+`role`, `ver`, `iat` and `exp` claims — the only credential the API takes.
+It also arrives as an HttpOnly `access_token` cookie, for browsers. The
+`xmpp_*` fields are the credentials of the user's mirrored chat account —
+connect to `ethora.xmpp_ws_url` with them; they are absent when the user
+has no mirror.
 
-The two credentials differ in one way worth knowing: a session is revoked
-the moment the password changes, an access token keeps working until it
-expires.
+Nothing is stored server-side per login. A token stays valid until it
+expires, with two exceptions: it stops working the moment the user is
+deleted, and changing a password revokes every token issued before it
+(that is the `ver` claim).
 
-Authenticated (send `Authorization: Bearer <access_token or session_token>`
-or the `session` cookie):
+Authenticated (send `Authorization: Bearer <access_token>` or the
+`access_token` cookie):
 
 | Method | Path | Permission | Description |
 |---|---|---|---|
 | `GET` | `/me` | — | current user |
 | `GET` | `/users` | `users:read` (admin only) | list users, oldest first (`?limit=`, `?offset=`) |
-| `PATCH` | `/users/{id}` | `users:update` (admin only) | partial update (`email`, `role`, `password`); password change logs the user out |
-| `DELETE` | `/users/{id}` | `users:delete` (admin only) | soft-delete a user (sets `deleted_at`, kills sessions; Ethora mirror is kept) |
+| `PATCH` | `/users/{id}` | `users:update` (admin only) | partial update (`email`, `role`, `password`); a password change revokes the user's tokens |
+| `DELETE` | `/users/{id}` | `users:delete` (admin only) | soft-delete a user (sets `deleted_at`, revokes their tokens; Ethora mirror is kept) |
 | `POST` | `/users/{id}/restore` | `users:update` (admin only) | restore a soft-deleted user (409 if not deleted) |
 | `POST` | `/chats` | `chats:create` | create a chat (`name`, `type`: `public`/`group`, `participants`: user ids) |
 | `DELETE` | `/chats/{id}` | `chats:delete` (admin only) | delete a chat |
@@ -101,7 +102,7 @@ or the `session` cookie):
 | `GET` | `/chats/{id}/messages` | `messages:read` | list messages, newest first (`?limit=`, `?offset=`) |
 
 Group chats are participants-only; public chats are open to any authenticated
-user. Sessions live 24h and are issued on register and login.
+user. Tokens live 24h and are issued on register and login.
 
 On startup the server ensures a `system@gocha.internal` account exists —
 service messages are sent on its behalf. Its password is random and thrown
@@ -115,7 +116,7 @@ connected, reconnecting automatically.
 ```sh
 TOKEN=$(curl -s -X POST localhost:8080/register \
   -H 'Content-Type: application/json' \
-  -d '{"email":"a@b.com","password":"secret123"}' | jq -r .session_token)
+  -d '{"email":"a@b.com","password":"secret123"}' | jq -r .access_token)
 
 curl -s -X POST localhost:8080/chats \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -143,7 +144,7 @@ go build -o bin/gochactrl.exe ./cmd/gochactrl   # or: task build
 # list users (tab-separated: id, role, created_at, email)
 ./bin/gochactrl.exe list --limit 20 --offset 0
 
-# wipe ALL users, sessions and their Ethora mirrors (destructive!);
+# wipe ALL users and their Ethora mirrors (destructive!);
 # the system account is the one thing it never deletes
 ./bin/gochactrl.exe delete-all --yes
 

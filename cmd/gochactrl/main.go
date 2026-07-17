@@ -61,13 +61,12 @@ func usage() {
 
 Commands:
   register    create a new user (--role admin|user, default user)
-  login       verify credentials and issue a session token
+  login       verify credentials and issue an access token
   delete      soft-delete a user by --id or --email (no permission checks);
               --hard removes permanently including the Ethora mirror
   restore     restore a soft-deleted user by --id or --email
   list        list users (--limit, --offset; no permission checks)
-  delete-all  delete ALL users and sessions except the system account
-              (requires --yes)
+  delete-all  delete ALL users except the system account (requires --yes)
   system      show the system account and its stored XMPP credentials
   init-system create the system account; fails if it already exists
 
@@ -403,23 +402,19 @@ func runLogin(args []string) error {
 	if err != nil {
 		return err
 	}
-	sess, err := users.IssueSession(ctx, storage, u)
+	if cfg.Auth.JWTSecret == "" {
+		return fmt.Errorf("auth.jwt_secret is not configured (set it in the config file or JWT_SECRET)")
+	}
+	token, err := users.IssueToken(u, []byte(cfg.Auth.JWTSecret), users.TokenTTL)
 	if err != nil {
 		return err
 	}
 
+	// Same payload the HTTP login returns, for scripts that parse it.
 	fmt.Printf("login ok: id=%s email=%s\n", u.ID.Hex(), u.Email)
-	fmt.Printf("session_token=%s\n", sess.Token)
-	fmt.Printf("expires_at=%s\n", sess.ExpiresAt.Format(time.RFC3339))
+	fmt.Printf("access_token=%s\n", token)
+	fmt.Printf("expires_at=%s\n", time.Now().UTC().Add(users.TokenTTL).Format(time.RFC3339))
 
-	// Same payload the HTTP login returns, for scripts that need it.
-	if cfg.Auth.JWTSecret != "" {
-		token, err := users.IssueToken(u, []byte(cfg.Auth.JWTSecret), users.SessionTTL)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("access_token=%s\n", token)
-	}
 	switch creds, err := storage.ChatCredentialsByUserID(ctx, u.ID); {
 	case err == nil:
 		fmt.Printf("xmpp_username=%s\n", creds.XMPPUsername)

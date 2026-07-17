@@ -88,41 +88,52 @@ func TestLogin(t *testing.T) {
 	}
 }
 
-func TestSessions(t *testing.T) {
+func TestAccessTokens(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
+	secret := []byte("service-test-secret")
 
 	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	sess, err := IssueSession(ctx, s, u)
+	token, err := IssueToken(u, secret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession: %v", err)
+		t.Fatalf("IssueToken: %v", err)
 	}
-	if len(sess.Token) != 64 {
-		t.Errorf("token length = %d, want 64 hex chars", len(sess.Token))
+	claims, err := ParseToken(token, secret)
+	if err != nil {
+		t.Fatalf("ParseToken: %v", err)
+	}
+	if claims.UserID != u.ID {
+		t.Errorf("token user = %s, want %s", claims.UserID.Hex(), u.ID.Hex())
+	}
+	if claims.Version != u.TokenVersion {
+		t.Errorf("token version = %d, want %d", claims.Version, u.TokenVersion)
 	}
 
-	got, err := s.SessionByToken(ctx, sess.Token)
-	if err != nil {
-		t.Fatalf("SessionByToken: %v", err)
+	if _, err := ParseToken(token, []byte("other-secret")); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("token under a foreign secret: %v, want ErrInvalidToken", err)
 	}
-	if got.UserID != u.ID {
-		t.Errorf("session user = %s, want %s", got.UserID.Hex(), u.ID.Hex())
-	}
-
-	if _, err := s.SessionByToken(ctx, "forged-token"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("forged token: error = %v, want ErrNotFound", err)
+	if _, err := ParseToken("forged-token", secret); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("forged token: %v, want ErrInvalidToken", err)
 	}
 
-	expired, err := s.CreateSession(ctx, u.ID, "expired-token", -time.Hour)
+	expired, err := IssueToken(u, secret, -time.Hour)
 	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
+		t.Fatalf("IssueToken: %v", err)
 	}
-	if _, err := s.SessionByToken(ctx, expired.Token); !errors.Is(err, ErrNotFound) {
-		t.Errorf("expired token: error = %v, want ErrNotFound", err)
+	if _, err := ParseToken(expired, secret); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("expired token: %v, want ErrInvalidToken", err)
+	}
+
+	// Signing and verifying without a key is a config error, not a 401.
+	if _, err := IssueToken(u, nil, time.Hour); !errors.Is(err, ErrNoJWTSecret) {
+		t.Errorf("IssueToken without a secret: %v, want ErrNoJWTSecret", err)
+	}
+	if _, err := ParseToken(token, nil); !errors.Is(err, ErrNoJWTSecret) {
+		t.Errorf("ParseToken without a secret: %v, want ErrNoJWTSecret", err)
 	}
 }
 
@@ -254,6 +265,49 @@ func TestEnsureSystemUser(t *testing.T) {
 	}
 }
 
+// A password change must bump token_version so tokens issued before it
+// stop authenticating — the replacement for killing sessions.
+func TestPasswordChangeRevokesTokens(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if u.TokenVersion != 0 {
+		t.Errorf("fresh user has token_version = %d, want 0", u.TokenVersion)
+	}
+
+	newPassword := "newsecret123"
+	updated, err := UpdateUser(ctx, s, u.ID, UpdateUserParams{Password: &newPassword})
+	if err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	if updated.TokenVersion != 1 {
+		t.Fatalf("token_version = %d after password change, want 1", updated.TokenVersion)
+	}
+
+	// Other updates leave it alone: an email fix must not log anyone out.
+	email := "alice2@example.com"
+	afterEmail, err := UpdateUser(ctx, s, u.ID, UpdateUserParams{Email: &email})
+	if err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	if afterEmail.TokenVersion != 1 {
+		t.Errorf("email change bumped token_version to %d", afterEmail.TokenVersion)
+	}
+
+	// Every change keeps invalidating whatever is outstanding.
+	again, err := UpdateUser(ctx, s, u.ID, UpdateUserParams{Password: &newPassword})
+	if err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	if again.TokenVersion != 2 {
+		t.Errorf("token_version = %d after second password change, want 2", again.TokenVersion)
+	}
+}
+
 func TestDeleteUserIsSoft(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
@@ -263,24 +317,18 @@ func TestDeleteUserIsSoft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	sess, err := IssueSession(ctx, s, u)
-	if err != nil {
-		t.Fatalf("IssueSession: %v", err)
-	}
 
 	if err := DeleteUser(ctx, s, u.ID); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 
-	// Invisible everywhere that matters...
+	// Invisible everywhere that matters — including to outstanding access
+	// tokens, which Auth resolves through UserByID.
 	if _, err := s.UserByID(ctx, u.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("UserByID after soft delete: %v, want ErrNotFound", err)
 	}
 	if _, err := Login(ctx, s, "doomed@example.com", "secret123"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("login after soft delete: %v, want ErrInvalidCredentials", err)
-	}
-	if _, err := s.SessionByToken(ctx, sess.Token); !errors.Is(err, ErrNotFound) {
-		t.Errorf("session still valid after soft delete: %v", err)
 	}
 	if list, _ := s.ListUsers(ctx, 10, 0); len(list) != 0 {
 		t.Errorf("soft-deleted user shows up in list: %v", list)
@@ -369,10 +417,6 @@ func TestHardDeleteUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	sess, err := IssueSession(ctx, s, u)
-	if err != nil {
-		t.Fatalf("IssueSession: %v", err)
-	}
 
 	if err := HardDeleteUser(ctx, s, chat, u.ID); err != nil {
 		t.Fatalf("HardDeleteUser: %v", err)
@@ -380,9 +424,6 @@ func TestHardDeleteUser(t *testing.T) {
 
 	if _, err := s.AnyUserByID(ctx, u.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("document survived hard delete: %v", err)
-	}
-	if _, err := s.SessionByToken(ctx, sess.Token); !errors.Is(err, ErrNotFound) {
-		t.Errorf("session still valid after hard delete: %v", err)
 	}
 	if len(chat.deleted) != 1 || chat.deleted[0] != u.ID.Hex() {
 		t.Errorf("chat deleted = %v, want [%s]", chat.deleted, u.ID.Hex())
@@ -423,18 +464,12 @@ func TestDeleteAllUsers(t *testing.T) {
 	})
 
 	var ids []string
-	var lastToken string
 	for _, email := range []string{"a@example.com", "b@example.com", "c@example.com"} {
 		u, err := Register(ctx, s, nil, email, "secret123", permissions.RoleUser)
 		if err != nil {
 			t.Fatalf("Register %s: %v", email, err)
 		}
-		sess, err := IssueSession(ctx, s, u)
-		if err != nil {
-			t.Fatalf("IssueSession %s: %v", email, err)
-		}
 		ids = append(ids, u.ID.Hex())
-		lastToken = sess.Token
 	}
 
 	count, err := DeleteAllUsers(ctx, s, chat)
@@ -446,9 +481,6 @@ func TestDeleteAllUsers(t *testing.T) {
 	}
 	if remaining, _ := s.ListUsers(ctx, 10, 0); len(remaining) != 0 {
 		t.Errorf("users remaining: %v", remaining)
-	}
-	if _, err := s.SessionByToken(ctx, lastToken); !errors.Is(err, ErrNotFound) {
-		t.Errorf("session survived wipe: %v", err)
 	}
 	if len(chat.deleted) != 3 {
 		t.Fatalf("chat deleted = %v, want all 3 ids", chat.deleted)

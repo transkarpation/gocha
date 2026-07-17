@@ -25,17 +25,17 @@ type User struct {
 	Role         permissions.Role `bson:"role"`
 	CreatedAt    time.Time        `bson:"created_at"`
 	DeletedAt    *time.Time       `bson:"deleted_at,omitempty"`
+
+	// TokenVersion revokes stateless access tokens: every token carries
+	// the version it was issued under and Auth rejects any mismatch.
+	// Bumped on password change. Zero for users who never changed it —
+	// and for tokens that predate the field, which is the same thing.
+	TokenVersion int `bson:"token_version,omitempty"`
 }
 
 // notDeleted excludes soft-deleted users; alive users (including legacy
 // documents) have no deleted_at field at all.
 var notDeleted = bson.E{Key: "deleted_at", Value: bson.D{{Key: "$exists", Value: false}}}
-
-type Session struct {
-	Token     string        `bson:"token"`
-	UserID    bson.ObjectID `bson:"user_id"`
-	ExpiresAt time.Time     `bson:"expires_at"`
-}
 
 // ChatCredentials are the XMPP credentials of a user's mirrored chat
 // account, captured from the chat backend at mirroring time. They live in
@@ -51,29 +51,18 @@ type ChatCredentials struct {
 
 type Storage struct {
 	users     *mongo.Collection
-	sessions  *mongo.Collection
 	chatCreds *mongo.Collection
 }
 
 func NewStorage(ctx context.Context, db *mongo.Database) (*Storage, error) {
 	s := &Storage{
 		users:     db.Collection("users"),
-		sessions:  db.Collection("sessions"),
 		chatCreds: db.Collection("chat_credentials"),
 	}
 
 	_, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// TTL index: Mongo removes expired sessions automatically.
-	_, err = s.sessions.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "expires_at", Value: 1}},
-		Options: options.Index().SetExpireAfterSeconds(0),
 	})
 	if err != nil {
 		return nil, err
@@ -161,6 +150,8 @@ type UserUpdate struct {
 }
 
 // UpdateUser applies the partial update and returns the updated user.
+// A new password also bumps token_version in the same write: changing the
+// password must revoke the access tokens handed out before it.
 func (s *Storage) UpdateUser(ctx context.Context, id bson.ObjectID, upd UserUpdate) (User, error) {
 	set := bson.D{}
 	if upd.Email != nil {
@@ -173,11 +164,19 @@ func (s *Storage) UpdateUser(ctx context.Context, id bson.ObjectID, upd UserUpda
 		set = append(set, bson.E{Key: "role", Value: *upd.Role})
 	}
 
+	update := bson.D{{Key: "$set", Value: set}}
+	if upd.PasswordHash != nil {
+		update = append(update, bson.E{
+			Key:   "$inc",
+			Value: bson.D{{Key: "token_version", Value: 1}},
+		})
+	}
+
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 	var u User
 	err := s.users.FindOneAndUpdate(ctx,
 		bson.D{{Key: "_id", Value: id}, notDeleted},
-		bson.D{{Key: "$set", Value: set}},
+		update,
 		opts,
 	).Decode(&u)
 	switch {
@@ -194,9 +193,10 @@ func (s *Storage) UpdateUser(ctx context.Context, id bson.ObjectID, upd UserUpda
 	return u, nil
 }
 
-// SoftDeleteUser marks the user as deleted (deleted_at) and invalidates
-// their sessions. The document — and its email — stay in the collection,
-// so re-registering the same email keeps failing with ErrEmailTaken.
+// SoftDeleteUser marks the user as deleted (deleted_at). The document —
+// and its email — stay in the collection, so re-registering the same email
+// keeps failing with ErrEmailTaken. Outstanding access tokens stop working
+// immediately: every read path filters soft-deleted users out.
 func (s *Storage) SoftDeleteUser(ctx context.Context, id bson.ObjectID) error {
 	res, err := s.users.UpdateOne(ctx,
 		bson.D{{Key: "_id", Value: id}, notDeleted},
@@ -208,7 +208,7 @@ func (s *Storage) SoftDeleteUser(ctx context.Context, id bson.ObjectID) error {
 	if res.MatchedCount == 0 {
 		return ErrNotFound
 	}
-	return s.DeleteSessions(ctx, id)
+	return nil
 }
 
 // RestoreUser clears deleted_at on a soft-deleted user and returns the
@@ -240,9 +240,9 @@ func (s *Storage) RestoreUser(ctx context.Context, id bson.ObjectID) (User, erro
 	return u, nil
 }
 
-// DeleteUser permanently removes the user, all their sessions (so
-// outstanding tokens stop working immediately) and their stored chat
-// credentials.
+// DeleteUser permanently removes the user and their stored chat
+// credentials. Outstanding access tokens stop working immediately —
+// Auth resolves every token against the users collection.
 func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
 	res, err := s.users.DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
 	if err != nil {
@@ -251,10 +251,7 @@ func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
 	if res.DeletedCount == 0 {
 		return ErrNotFound
 	}
-	if err := s.DeleteChatCredentials(ctx, id); err != nil {
-		return err
-	}
-	return s.DeleteSessions(ctx, id)
+	return s.DeleteChatCredentials(ctx, id)
 }
 
 // AllUserIDs returns the ids of every user.
@@ -277,16 +274,15 @@ func (s *Storage) AllUserIDs(ctx context.Context) ([]bson.ObjectID, error) {
 	return ids, nil
 }
 
-// DeleteAllUsers removes every user, every session and all stored chat
-// credentials — except the system account, which the server depends on:
-// it survives together with its sessions and chat credentials.
+// DeleteAllUsers removes every user and all stored chat credentials —
+// except the system account, which the server depends on: it survives
+// together with its chat credentials.
 func (s *Storage) DeleteAllUsers(ctx context.Context) (int64, error) {
-	userFilter, sessFilter, credFilter := bson.D{}, bson.D{}, bson.D{}
+	userFilter, credFilter := bson.D{}, bson.D{}
 	sys, err := s.AnyUserByEmail(ctx, SystemEmail)
 	switch {
 	case err == nil:
 		userFilter = bson.D{{Key: "_id", Value: bson.D{{Key: "$ne", Value: sys.ID}}}}
-		sessFilter = bson.D{{Key: "user_id", Value: bson.D{{Key: "$ne", Value: sys.ID}}}}
 		credFilter = bson.D{{Key: "_id", Value: bson.D{{Key: "$ne", Value: sys.ID}}}}
 	case !errors.Is(err, ErrNotFound):
 		return 0, err
@@ -295,9 +291,6 @@ func (s *Storage) DeleteAllUsers(ctx context.Context) (int64, error) {
 	res, err := s.users.DeleteMany(ctx, userFilter)
 	if err != nil {
 		return 0, err
-	}
-	if _, err := s.sessions.DeleteMany(ctx, sessFilter); err != nil {
-		return res.DeletedCount, err
 	}
 	if _, err := s.chatCreds.DeleteMany(ctx, credFilter); err != nil {
 		return res.DeletedCount, err
@@ -340,44 +333,9 @@ func (s *Storage) DeleteChatCredentials(ctx context.Context, userID bson.ObjectI
 	return err
 }
 
-// DeleteSessions invalidates all sessions of the user.
-func (s *Storage) DeleteSessions(ctx context.Context, userID bson.ObjectID) error {
-	_, err := s.sessions.DeleteMany(ctx, bson.D{{Key: "user_id", Value: userID}})
-	return err
-}
-
 // CountExisting returns how many of the given user ids exist and are
 // not soft-deleted.
 func (s *Storage) CountExisting(ctx context.Context, ids []bson.ObjectID) (int64, error) {
 	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}, notDeleted}
 	return s.users.CountDocuments(ctx, filter)
-}
-
-// SessionByToken returns the session only if it has not expired yet:
-// the TTL monitor deletes expired documents with up to a minute of delay,
-// so the expiry is checked in the query as well.
-func (s *Storage) SessionByToken(ctx context.Context, token string) (Session, error) {
-	filter := bson.D{
-		{Key: "token", Value: token},
-		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: time.Now().UTC()}}},
-	}
-	var sess Session
-	err := s.sessions.FindOne(ctx, filter).Decode(&sess)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Session{}, ErrNotFound
-	}
-	return sess, err
-}
-
-func (s *Storage) CreateSession(ctx context.Context, userID bson.ObjectID, token string, ttl time.Duration) (Session, error) {
-	sess := Session{
-		Token:     token,
-		UserID:    userID,
-		ExpiresAt: time.Now().UTC().Add(ttl),
-	}
-	_, err := s.sessions.InsertOne(ctx, sess)
-	if err != nil {
-		return Session{}, err
-	}
-	return sess, nil
 }

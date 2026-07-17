@@ -40,8 +40,8 @@ func echoUser(t *testing.T) http.HandlerFunc {
 }
 
 // TestRegisterLoginResponse covers what a client gets when signing in:
-// a session, a JWT access token signed with our secret, and the XMPP
-// credentials of its mirrored chat account.
+// a JWT access token signed with our secret and the XMPP credentials of
+// its mirrored chat account.
 func TestRegisterLoginResponse(t *testing.T) {
 	s := newTestStorage(t)
 	chat := &fakeChat{}
@@ -64,8 +64,8 @@ func TestRegisterLoginResponse(t *testing.T) {
 	if userID == "" {
 		t.Fatalf("no user id in response: %v", got)
 	}
-	if got["session_token"] == "" {
-		t.Error("no session_token in response")
+	if _, ok := got["session_token"]; ok {
+		t.Errorf("session_token is gone from the API, response still has it: %v", got)
 	}
 	if got["xmpp_username"] != "xmpp-"+userID || got["xmpp_password"] != "xmpp-pass-"+userID {
 		t.Errorf("xmpp credentials = %v / %v", got["xmpp_username"], got["xmpp_password"])
@@ -118,10 +118,27 @@ func TestRegisterLoginResponse(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &loggedIn); err != nil {
 		t.Fatalf("decode login response: %v", err)
 	}
-	for _, key := range []string{"access_token", "session_token", "xmpp_username", "xmpp_password"} {
+	for _, key := range []string{"access_token", "xmpp_username", "xmpp_password"} {
 		if v, _ := loggedIn[key].(string); v == "" {
 			t.Errorf("login response missing %s", key)
 		}
+	}
+
+	// The token also travels in an HttpOnly cookie for browser clients.
+	var cookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == accessTokenCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("no %s cookie set", accessTokenCookieName)
+	}
+	if cookie.Value != loggedIn["access_token"] {
+		t.Error("cookie and body carry different tokens")
+	}
+	if !cookie.HttpOnly {
+		t.Error("access token cookie must be HttpOnly")
 	}
 }
 
@@ -177,6 +194,7 @@ func TestAuthWithAccessToken(t *testing.T) {
 	validClaims := func() jwt.MapClaims {
 		return jwt.MapClaims{
 			"sub": u.ID.Hex(),
+			"iat": time.Now().Unix(),
 			"exp": time.Now().Add(time.Hour).Unix(),
 		}
 	}
@@ -195,11 +213,20 @@ func TestAuthWithAccessToken(t *testing.T) {
 		{"expired", func(t *testing.T) string {
 			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{
 				"sub": u.ID.Hex(),
+				"iat": time.Now().Add(-time.Hour).Unix(),
 				"exp": time.Now().Add(-time.Minute).Unix(),
 			})
 		}, http.StatusUnauthorized},
 		{"no expiry", func(t *testing.T) string {
-			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{"sub": u.ID.Hex()})
+			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{
+				"sub": u.ID.Hex(),
+				"iat": time.Now().Unix(),
+			})
+		}, http.StatusUnauthorized},
+		{"stale version", func(t *testing.T) string {
+			claims := validClaims()
+			claims["ver"] = 7 // the user is still on version 0
+			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, claims)
 		}, http.StatusUnauthorized},
 		{"alg none", func(t *testing.T) string {
 			return signToken(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, validClaims())
@@ -207,12 +234,14 @@ func TestAuthWithAccessToken(t *testing.T) {
 		{"unknown user", func(t *testing.T) string {
 			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{
 				"sub": bson.NewObjectID().Hex(),
+				"iat": time.Now().Unix(),
 				"exp": time.Now().Add(time.Hour).Unix(),
 			})
 		}, http.StatusUnauthorized},
 		{"garbage subject", func(t *testing.T) string {
 			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{
 				"sub": "not-an-object-id",
+				"iat": time.Now().Unix(),
 				"exp": time.Now().Add(time.Hour).Unix(),
 			})
 		}, http.StatusUnauthorized},
@@ -285,9 +314,9 @@ func TestAuthMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	sess, err := IssueSession(ctx, s, u)
+	token, err := IssueToken(u, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession: %v", err)
+		t.Fatalf("IssueToken: %v", err)
 	}
 
 	protected := h.Auth(echoUser(t))
@@ -299,24 +328,17 @@ func TestAuthMiddleware(t *testing.T) {
 	}{
 		{"no token", func(r *http.Request) {}, http.StatusUnauthorized},
 		{"valid bearer", func(r *http.Request) {
-			r.Header.Set("Authorization", "Bearer "+sess.Token)
+			r.Header.Set("Authorization", "Bearer "+token)
 		}, http.StatusOK},
 		{"valid cookie", func(r *http.Request) {
-			r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.Token})
+			r.AddCookie(&http.Cookie{Name: accessTokenCookieName, Value: token})
 		}, http.StatusOK},
 		{"garbage token", func(r *http.Request) {
 			r.Header.Set("Authorization", "Bearer deadbeef")
 		}, http.StatusUnauthorized},
 		{"bearer wins over bad cookie", func(r *http.Request) {
-			r.Header.Set("Authorization", "Bearer "+sess.Token)
-			r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage"})
-		}, http.StatusOK},
-		{"valid access token", func(r *http.Request) {
-			token, err := IssueToken(u, testJWTSecret, time.Hour)
-			if err != nil {
-				t.Fatalf("IssueToken: %v", err)
-			}
 			r.Header.Set("Authorization", "Bearer "+token)
+			r.AddCookie(&http.Cookie{Name: accessTokenCookieName, Value: "garbage"})
 		}, http.StatusOK},
 	}
 	for _, tt := range tests {
@@ -344,13 +366,13 @@ func TestRequirePermission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register user: %v", err)
 	}
-	adminSess, err := IssueSession(ctx, s, admin)
+	adminToken, err := IssueToken(admin, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession admin: %v", err)
+		t.Fatalf("IssueToken admin: %v", err)
 	}
-	userSess, err := IssueSession(ctx, s, user)
+	userToken, err := IssueToken(user, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession user: %v", err)
+		t.Fatalf("IssueToken user: %v", err)
 	}
 
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -363,8 +385,8 @@ func TestRequirePermission(t *testing.T) {
 		token      string
 		wantStatus int
 	}{
-		{"admin allowed", adminSess.Token, http.StatusOK},
-		{"user forbidden", userSess.Token, http.StatusForbidden},
+		{"admin allowed", adminToken, http.StatusOK},
+		{"user forbidden", userToken, http.StatusForbidden},
 		{"anonymous unauthorized", "", http.StatusUnauthorized},
 	}
 	for _, tt := range tests {
@@ -404,13 +426,13 @@ func TestListUsersRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register user: %v", err)
 	}
-	adminSess, err := IssueSession(ctx, s, admin)
+	adminToken, err := IssueToken(admin, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession admin: %v", err)
+		t.Fatalf("IssueToken admin: %v", err)
 	}
-	userSess, err := IssueSession(ctx, s, user)
+	userToken, err := IssueToken(user, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession user: %v", err)
+		t.Fatalf("IssueToken user: %v", err)
 	}
 
 	r := chi.NewRouter()
@@ -427,14 +449,14 @@ func TestListUsersRoute(t *testing.T) {
 		return rec
 	}
 
-	if rec := do("/users", userSess.Token); rec.Code != http.StatusForbidden {
+	if rec := do("/users", userToken); rec.Code != http.StatusForbidden {
 		t.Errorf("plain user list: status = %d, want 403", rec.Code)
 	}
-	if rec := do("/users?limit=0", adminSess.Token); rec.Code != http.StatusUnprocessableEntity {
+	if rec := do("/users?limit=0", adminToken); rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("bad limit: status = %d, want 422", rec.Code)
 	}
 
-	rec := do("/users", adminSess.Token)
+	rec := do("/users", adminToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("admin list: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -458,7 +480,7 @@ func TestListUsersRoute(t *testing.T) {
 		}
 	}
 
-	if rec := do("/users?limit=1&offset=1", adminSess.Token); rec.Code == http.StatusOK {
+	if rec := do("/users?limit=1&offset=1", adminToken); rec.Code == http.StatusOK {
 		var page struct {
 			Users []map[string]any `json:"users"`
 		}
@@ -483,13 +505,13 @@ func TestUpdateUserRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register victim: %v", err)
 	}
-	adminSess, err := IssueSession(ctx, s, admin)
+	adminToken, err := IssueToken(admin, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession admin: %v", err)
+		t.Fatalf("IssueToken admin: %v", err)
 	}
-	victimSess, err := IssueSession(ctx, s, victim)
+	victimToken, err := IssueToken(victim, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession victim: %v", err)
+		t.Fatalf("IssueToken victim: %v", err)
 	}
 
 	r := chi.NewRouter()
@@ -508,11 +530,11 @@ func TestUpdateUserRoute(t *testing.T) {
 	}
 	victimURL := "/users/" + victim.ID.Hex()
 
-	if rec := do(victimURL, victimSess.Token, `{"role":"admin"}`); rec.Code != http.StatusForbidden {
+	if rec := do(victimURL, victimToken, `{"role":"admin"}`); rec.Code != http.StatusForbidden {
 		t.Errorf("plain user update: status = %d, want 403", rec.Code)
 	}
 
-	rec := do(victimURL, adminSess.Token, `{"role":"admin"}`)
+	rec := do(victimURL, adminToken, `{"role":"admin"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("role update: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -541,24 +563,47 @@ func TestUpdateUserRoute(t *testing.T) {
 	}
 	for _, tt := range validation {
 		t.Run(tt.name, func(t *testing.T) {
-			if rec := do(tt.path, adminSess.Token, tt.body); rec.Code != tt.want {
+			if rec := do(tt.path, adminToken, tt.body); rec.Code != tt.want {
 				t.Errorf("status = %d, want %d (body: %s)", rec.Code, tt.want, rec.Body.String())
 			}
 		})
 	}
 
-	// Password change invalidates the victim's sessions.
-	if rec := do(victimURL, adminSess.Token, `{"password":"newsecret123"}`); rec.Code != http.StatusOK {
+	// Changing the password revokes the victim's outstanding tokens —
+	// the point of an admin resetting a compromised account.
+	if rec := do(victimURL, adminToken, `{"password":"newsecret123"}`); rec.Code != http.StatusOK {
 		t.Fatalf("password update: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if _, err := s.SessionByToken(ctx, victimSess.Token); !errors.Is(err, ErrNotFound) {
-		t.Errorf("victim session survived password change: %v", err)
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer "+victimToken)
+	rec = httptest.NewRecorder()
+	h.Auth(echoUser(t)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("victim token survived the password change: %d", rec.Code)
 	}
+
 	if _, err := Login(ctx, s, "victim@example.com", "newsecret123"); err != nil {
 		t.Errorf("login with new password: %v", err)
 	}
 	if _, err := Login(ctx, s, "victim@example.com", "secret123"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("login with old password: %v, want ErrInvalidCredentials", err)
+	}
+
+	// A token issued after the change keeps working.
+	victim, err = s.UserByID(ctx, victim.ID)
+	if err != nil {
+		t.Fatalf("UserByID: %v", err)
+	}
+	fresh, err := IssueToken(victim, testJWTSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer "+fresh)
+	rec = httptest.NewRecorder()
+	h.Auth(echoUser(t)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("token issued after the password change was rejected: %d", rec.Code)
 	}
 }
 
@@ -574,13 +619,13 @@ func TestRestoreUserRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register victim: %v", err)
 	}
-	adminSess, err := IssueSession(ctx, s, admin)
+	adminToken, err := IssueToken(admin, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession admin: %v", err)
+		t.Fatalf("IssueToken admin: %v", err)
 	}
-	victimSess, err := IssueSession(ctx, s, victim)
+	victimToken, err := IssueToken(victim, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession victim: %v", err)
+		t.Fatalf("IssueToken victim: %v", err)
 	}
 
 	r := chi.NewRouter()
@@ -598,17 +643,17 @@ func TestRestoreUserRoute(t *testing.T) {
 	}
 	restoreURL := "/users/" + victim.ID.Hex() + "/restore"
 
-	if rec := do(restoreURL, victimSess.Token); rec.Code != http.StatusForbidden {
+	if rec := do(restoreURL, victimToken); rec.Code != http.StatusForbidden {
 		t.Errorf("plain user restore: status = %d, want 403", rec.Code)
 	}
-	if rec := do(restoreURL, adminSess.Token); rec.Code != http.StatusConflict {
+	if rec := do(restoreURL, adminToken); rec.Code != http.StatusConflict {
 		t.Errorf("restore alive user: status = %d, want 409", rec.Code)
 	}
 
 	if err := DeleteUser(ctx, s, victim.ID); err != nil {
 		t.Fatalf("soft delete: %v", err)
 	}
-	rec := do(restoreURL, adminSess.Token)
+	rec := do(restoreURL, adminToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("restore: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -617,10 +662,10 @@ func TestRestoreUserRoute(t *testing.T) {
 	if resp["email"] != "victim@example.com" {
 		t.Errorf("restored user = %v", resp)
 	}
-	if rec := do("/users/not-hex/restore", adminSess.Token); rec.Code != http.StatusUnprocessableEntity {
+	if rec := do("/users/not-hex/restore", adminToken); rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("bad id: status = %d, want 422", rec.Code)
 	}
-	if rec := do("/users/000000000000000000000000/restore", adminSess.Token); rec.Code != http.StatusNotFound {
+	if rec := do("/users/000000000000000000000000/restore", adminToken); rec.Code != http.StatusNotFound {
 		t.Errorf("missing user: status = %d, want 404", rec.Code)
 	}
 }
@@ -637,13 +682,13 @@ func TestDeleteUserRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register victim: %v", err)
 	}
-	adminSess, err := IssueSession(ctx, s, admin)
+	adminToken, err := IssueToken(admin, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession admin: %v", err)
+		t.Fatalf("IssueToken admin: %v", err)
 	}
-	victimSess, err := IssueSession(ctx, s, victim)
+	victimToken, err := IssueToken(victim, testJWTSecret, time.Hour)
 	if err != nil {
-		t.Fatalf("IssueSession victim: %v", err)
+		t.Fatalf("IssueToken victim: %v", err)
 	}
 
 	r := chi.NewRouter()
@@ -660,20 +705,20 @@ func TestDeleteUserRoute(t *testing.T) {
 		return rec.Code
 	}
 
-	if code := do("/users/"+victim.ID.Hex(), victimSess.Token); code != http.StatusForbidden {
+	if code := do("/users/"+victim.ID.Hex(), victimToken); code != http.StatusForbidden {
 		t.Errorf("plain user delete: status = %d, want 403", code)
 	}
-	if code := do("/users/not-hex", adminSess.Token); code != http.StatusUnprocessableEntity {
+	if code := do("/users/not-hex", adminToken); code != http.StatusUnprocessableEntity {
 		t.Errorf("invalid id: status = %d, want 422", code)
 	}
-	if code := do("/users/"+victim.ID.Hex(), adminSess.Token); code != http.StatusNoContent {
+	if code := do("/users/"+victim.ID.Hex(), adminToken); code != http.StatusNoContent {
 		t.Errorf("admin delete: status = %d, want 204", code)
 	}
-	if code := do("/users/"+victim.ID.Hex(), adminSess.Token); code != http.StatusNotFound {
+	if code := do("/users/"+victim.ID.Hex(), adminToken); code != http.StatusNotFound {
 		t.Errorf("second delete: status = %d, want 404", code)
 	}
 	// The victim's session died with the account.
-	if code := do("/users/"+admin.ID.Hex(), victimSess.Token); code != http.StatusUnauthorized {
+	if code := do("/users/"+admin.ID.Hex(), victimToken); code != http.StatusUnauthorized {
 		t.Errorf("deleted user's token: status = %d, want 401", code)
 	}
 }

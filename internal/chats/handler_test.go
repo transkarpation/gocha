@@ -60,6 +60,9 @@ func TestIsParticipant(t *testing.T) {
 	}
 }
 
+// testJWTSecret signs the access tokens these tests authenticate with.
+var testJWTSecret = []byte("test-jwt-secret")
+
 // testEnv wires storages and the router exactly like main.go does and
 // returns ready-to-use bearer tokens for two plain users and an admin.
 type testEnv struct {
@@ -88,7 +91,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("chats.NewStorage: %v", err)
 	}
 
-	uh := users.NewHandler(ustorage, nil, []byte("test-jwt-secret"))
+	uh := users.NewHandler(ustorage, nil, testJWTSecret)
 	ch := NewHandler(cstorage, ustorage)
 
 	r := chi.NewRouter()
@@ -106,11 +109,11 @@ func newTestEnv(t *testing.T) *testEnv {
 		if err != nil {
 			t.Fatalf("register %s: %v", email, err)
 		}
-		sess, err := users.IssueSession(ctx, ustorage, u)
+		token, err := users.IssueToken(u, testJWTSecret, users.TokenTTL)
 		if err != nil {
-			t.Fatalf("issue session %s: %v", email, err)
+			t.Fatalf("issue token %s: %v", email, err)
 		}
-		return u.ID, sess.Token
+		return u.ID, token
 	}
 	env.userID, env.userToken = register("user@example.com", permissions.RoleUser)
 	env.otherID, env.otherToken = register("other@example.com", permissions.RoleUser)
