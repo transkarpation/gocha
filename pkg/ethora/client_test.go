@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -208,6 +209,36 @@ func TestDeleteUsersBatch(t *testing.T) {
 		return []byte(testSecret), nil
 	}); err != nil {
 		t.Errorf("Authorization header is not a valid token: %v", err)
+	}
+}
+
+func TestRedactPasswords(t *testing.T) {
+	body, err := json.Marshal(batchCreateRequest{
+		BypassEmailConfirmation: true,
+		UsersList: []BatchUser{
+			{Email: "a@b.com", FirstName: "A", LastName: "B", Password: "super-secret", UUID: "id-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	got := redactPasswords(body)
+	if strings.Contains(got, "super-secret") {
+		t.Errorf("password leaked into log output: %s", got)
+	}
+	if !strings.Contains(got, `"password":"[redacted]"`) {
+		t.Errorf("password not masked: %s", got)
+	}
+	// Everything else must survive redaction.
+	for _, want := range []string{"a@b.com", "id-1", `"bypassEmailConfirmation":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output lost %q: %s", want, got)
+		}
+	}
+
+	if got := redactPasswords([]byte("not json")); got != "<non-json body>" {
+		t.Errorf("non-JSON body = %q", got)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -62,13 +63,17 @@ func (e *APIError) Error() string {
 // (skipped when out is nil).
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
+	params := "<empty>"
 	if in != nil {
 		data, err := json.Marshal(in)
 		if err != nil {
 			return fmt.Errorf("encode request: %w", err)
 		}
 		body = bytes.NewReader(data)
+		params = redactPasswords(data)
 	}
+	slog.InfoContext(ctx, "ethora request",
+		"method", method, "path", path, "params", params)
 
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
@@ -102,4 +107,37 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		}
 	}
 	return nil
+}
+
+// redactPasswords renders a JSON request body for logging with every
+// "password" value masked: mirror passwords are one-off and must never be
+// persisted anywhere, logs included.
+func redactPasswords(data []byte) string {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return "<non-json body>"
+	}
+	masked, err := json.Marshal(maskPasswords(v))
+	if err != nil {
+		return "<unloggable body>"
+	}
+	return string(masked)
+}
+
+func maskPasswords(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if strings.EqualFold(k, "password") {
+				t[k] = "[redacted]"
+			} else {
+				t[k] = maskPasswords(val)
+			}
+		}
+	case []any:
+		for i, val := range t {
+			t[i] = maskPasswords(val)
+		}
+	}
+	return v
 }

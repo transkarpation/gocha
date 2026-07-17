@@ -47,6 +47,8 @@ every request carries a JWT signed HS256 with the API secret, claims MUST be
 nested as `{"data": {"type": "server", "appId": <api key>}}` — top-level
 claims get rejected as INVALID_TOKEN_TYPE (raw token in the Authorization
 header, no Bearer prefix). Batch user creation is asynchronous (202 + jobId).
+The client logs every request at Info (method, path, body) with `password`
+values masked — one-off mirror passwords must never reach logs.
 
 User mirroring: `users.Register` calls the `users.ChatBackend` interface when
 one is provided; `internal/mirror.Ethora` is the adapter (random names,
