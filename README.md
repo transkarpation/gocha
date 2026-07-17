@@ -114,6 +114,9 @@ go build -o bin/gochactrl.exe ./cmd/gochactrl   # or: task build
 
 # wipe ALL users, sessions and their Ethora mirrors (destructive!)
 ./bin/gochactrl.exe delete-all --yes
+
+# show the system account (created at server startup) and its XMPP credentials
+./bin/gochactrl.exe system
 ```
 
 Role capabilities are defined in `internal/permissions` — the single registry

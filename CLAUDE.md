@@ -75,10 +75,11 @@ Two entry points share the `internal/` packages:
 
 - `main.go` — HTTP server (chi). `setupRouter` wires all routes; protected
   routes live in the `r.Group` that applies `users.Handler.Auth`.
-- `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`, `list`,
-  `delete-all` subcommands; all except `login` bypass permission checks by
-  design, `delete-all` requires `--yes`). There is deliberately no HTTP route
-  for bulk deletion.
+- `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`,
+  `restore`, `list`, `delete-all`, `system` subcommands; all except `login`
+  bypass permission checks by design, `delete-all` requires `--yes`,
+  `system` prints the system account incl. its XMPP credentials). There is
+  deliberately no HTTP route for bulk deletion.
   Its results (`session_token=...`) print via `fmt` to stdout on purpose —
   scripts parse them; don't convert to slog.
 

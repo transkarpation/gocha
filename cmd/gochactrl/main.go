@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -40,6 +41,8 @@ func main() {
 		err = runDeleteAll(os.Args[2:])
 	case "restore":
 		err = runRestore(os.Args[2:])
+	case "system":
+		err = runSystem(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -62,6 +65,7 @@ Commands:
   restore    restore a soft-deleted user by --id or --email
   list       list users (--limit, --offset; no permission checks)
   delete-all delete ALL users and sessions (requires --yes)
+  system     show the system account and its stored XMPP credentials
 
 Common flags:
   --email <addr> --password <pass> [--config <path>]
@@ -241,6 +245,50 @@ func runRestore(args []string) error {
 		return err
 	}
 	fmt.Printf("user restored: id=%s email=%s\n", u.ID.Hex(), u.Email)
+	return nil
+}
+
+func runSystem(args []string) error {
+	fs := flag.NewFlagSet("system", flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "path to config file")
+	fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
+	defer cancel()
+
+	storage, _, cleanup, err := openStorage(ctx, *configPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	u, err := storage.AnyUserByEmail(ctx, users.SystemEmail)
+	if errors.Is(err, users.ErrNotFound) {
+		return fmt.Errorf("system account does not exist yet — start the server once to create it")
+	}
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("id=%s\n", u.ID.Hex())
+	fmt.Printf("email=%s\n", u.Email)
+	fmt.Printf("role=%s\n", u.Role)
+	fmt.Printf("created_at=%s\n", u.CreatedAt.Format(time.RFC3339))
+	if u.DeletedAt != nil {
+		fmt.Printf("deleted_at=%s\n", u.DeletedAt.Format(time.RFC3339))
+	}
+
+	creds, err := storage.ChatCredentialsByUserID(ctx, u.ID)
+	switch {
+	case errors.Is(err, users.ErrNotFound):
+		fmt.Println("xmpp_credentials=none")
+	case err != nil:
+		return err
+	default:
+		fmt.Printf("xmpp_username=%s\n", creds.XMPPUsername)
+		fmt.Printf("xmpp_password=%s\n", creds.XMPPPassword)
+		fmt.Printf("xmpp_updated_at=%s\n", creds.UpdatedAt.Format(time.RFC3339))
+	}
 	return nil
 }
 
