@@ -74,6 +74,11 @@ Authenticated (send `Authorization: Bearer <token>` or the `session` cookie):
 Group chats are participants-only; public chats are open to any authenticated
 user. Sessions live 24h and are issued on register and login.
 
+On startup the server ensures a `system@gocha.internal` account exists —
+service messages are sent on its behalf. Its password is random and thrown
+away, so it cannot be logged into; if soft-deleted, the next server start
+restores it.
+
 ### Example
 
 ```sh

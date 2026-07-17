@@ -96,6 +96,13 @@ Soft-deleted users can be restored (`POST /users/{id}/restore` under
 `users:update`, or `gochactrl restore`) — sessions are not resurrected,
 restoring an alive user is ErrNotDeleted (409).
 
+System account: server startup calls `users.EnsureSystemUser` — an
+idempotent ensure of `users.SystemEmail` (`system@gocha.internal`), the
+account service messages are sent from. Created with a thrown-away random
+password (login impossible; the server acts via storage, not sessions),
+mirrored to Ethora like any user, restored automatically if soft-deleted.
+After `delete-all` it reappears on the next server start.
+
 Roles and permissions (`internal/permissions`): the single registry of roles
 (`admin`, `user`) and per-entity permissions (`chats:create`, ...). **Every new
 entity exposed over HTTP must define its permission set in this package and

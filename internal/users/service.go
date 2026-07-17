@@ -32,6 +32,45 @@ var (
 	ErrNothingToUpdate    = errors.New("nothing to update")
 )
 
+// SystemEmail identifies the server's own account — service messages are
+// sent on its behalf. The account is created at server startup with a
+// random throwaway password, so nobody can log in as it.
+const SystemEmail = "system@gocha.internal"
+
+// EnsureSystemUser makes sure the system account exists and is alive:
+// missing — registered (and mirrored like any user), soft-deleted —
+// restored, present — returned as is. Called once at server startup,
+// safe to call repeatedly.
+func EnsureSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, error) {
+	u, err := s.AnyUserByEmail(ctx, SystemEmail)
+	switch {
+	case err == nil && u.DeletedAt == nil:
+		return u, nil
+	case err == nil: // soft-deleted, e.g. by an admin — bring it back
+		u, err = s.RestoreUser(ctx, u.ID)
+		if err != nil {
+			return User{}, err
+		}
+		slog.InfoContext(ctx, "system user restored", "user_id", u.ID.Hex())
+		return u, nil
+	case errors.Is(err, ErrNotFound):
+		// The password is never needed again: the server acts through
+		// storage directly, not through login.
+		password, err := newSessionToken()
+		if err != nil {
+			return User{}, err
+		}
+		u, err = Register(ctx, s, chat, SystemEmail, password, permissions.RoleUser)
+		if err != nil {
+			return User{}, err
+		}
+		slog.InfoContext(ctx, "system user created", "user_id", u.ID.Hex(), "email", u.Email)
+		return u, nil
+	default:
+		return User{}, err
+	}
+}
+
 // Register validates credentials, hashes the password and stores the user.
 // Shared by the HTTP handler and the gochactrl CLI.
 //

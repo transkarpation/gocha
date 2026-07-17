@@ -121,10 +121,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	chat := chatBackend(cfg.Ethora)
+
+	// The server's own account: service messages are sent on its behalf.
+	sysUser, err := users.EnsureSystemUser(mongoCtx, storage, chat)
+	if err != nil {
+		slog.Error("ensure system user", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("system user ready", "user_id", sysUser.ID.Hex(), "email", sysUser.Email)
+
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: setupRouter(storage, chatStorage, chatBackend(cfg.Ethora)),
+		Handler: setupRouter(storage, chatStorage, chat),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

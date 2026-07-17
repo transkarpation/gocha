@@ -185,6 +185,58 @@ func TestRegisterMirrorsToChatBackend(t *testing.T) {
 	}
 }
 
+func TestEnsureSystemUser(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	chat := &fakeChat{}
+
+	u, err := EnsureSystemUser(ctx, s, chat)
+	if err != nil {
+		t.Fatalf("EnsureSystemUser: %v", err)
+	}
+	if u.Email != SystemEmail {
+		t.Errorf("email = %q, want %q", u.Email, SystemEmail)
+	}
+	if len(chat.mirrored) != 1 || chat.mirrored[0].ID != u.ID {
+		t.Errorf("mirrored = %+v, want the system user", chat.mirrored)
+	}
+
+	// Idempotent: a second call returns the same account, no new mirror.
+	again, err := EnsureSystemUser(ctx, s, chat)
+	if err != nil {
+		t.Fatalf("second EnsureSystemUser: %v", err)
+	}
+	if again.ID != u.ID {
+		t.Errorf("second call returned a different user: %s vs %s", again.ID.Hex(), u.ID.Hex())
+	}
+	if len(chat.mirrored) != 1 {
+		t.Errorf("existing system user must not be mirrored again: %+v", chat.mirrored)
+	}
+
+	// A soft-deleted system account is restored, not recreated.
+	if err := DeleteUser(ctx, s, u.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	restored, err := EnsureSystemUser(ctx, s, chat)
+	if err != nil {
+		t.Fatalf("EnsureSystemUser after soft delete: %v", err)
+	}
+	if restored.ID != u.ID {
+		t.Errorf("restored user id = %s, want %s", restored.ID.Hex(), u.ID.Hex())
+	}
+	if restored.DeletedAt != nil {
+		t.Error("system user still soft-deleted after EnsureSystemUser")
+	}
+	if len(chat.mirrored) != 1 {
+		t.Errorf("restore must not mirror again: %+v", chat.mirrored)
+	}
+
+	// Nobody can log in as the system account (password is thrown away).
+	if _, err := Login(ctx, s, SystemEmail, "anything-at-all"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("login as system user: %v, want ErrInvalidCredentials", err)
+	}
+}
+
 func TestDeleteUserIsSoft(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
