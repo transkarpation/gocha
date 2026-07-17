@@ -98,6 +98,8 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
+	slog.InfoContext(ctx, "ethora response",
+		"method", method, "path", path, "status", resp.StatusCode, "body", redactPasswords(data))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &APIError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
@@ -109,9 +111,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	return nil
 }
 
-// redactPasswords renders a JSON request body for logging with every
-// "password" value masked: mirror passwords are one-off and must never be
-// persisted anywhere, logs included.
+// redactPasswords renders a JSON request or response body for logging with
+// every password-carrying value masked ("password", "xmppPassword", ...):
+// mirror passwords are one-off and must never be persisted anywhere,
+// logs included.
 func redactPasswords(data []byte) string {
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
@@ -128,7 +131,7 @@ func maskPasswords(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			if strings.EqualFold(k, "password") {
+			if strings.Contains(strings.ToLower(k), "password") {
 				t[k] = "[redacted]"
 			} else {
 				t[k] = maskPasswords(val)

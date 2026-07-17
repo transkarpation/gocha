@@ -118,11 +118,14 @@ func TestCreateUsersBatch(t *testing.T) {
 		gotMethod = r.Method
 		json.NewDecoder(r.Body).Decode(&gotBody)
 
-		// Ethora accepts the batch asynchronously.
-		w.WriteHeader(http.StatusAccepted)
+		// v1 creates synchronously and returns the users in "results".
+		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok": true, "success": true,
-			"jobId": "1215", "statusUrl": "/v2/users/batch/1215",
+			"results": []map[string]any{
+				{"_id": "e1", "uuid": "id-1", "appId": testKey, "firstName": "A"},
+				{"_id": "e2", "uuid": "id-2", "appId": testKey, "firstName": "C"},
+			},
 		})
 	}))
 	defer srv.Close()
@@ -132,13 +135,13 @@ func TestCreateUsersBatch(t *testing.T) {
 		{Email: "a@b.com", FirstName: "A", LastName: "B", Password: "pw1", UUID: "id-1"},
 		{Email: "c@d.com", FirstName: "C", LastName: "D", Password: "pw2", UUID: "id-2"},
 	}
-	job, err := c.CreateUsersBatch(context.Background(), batch, false)
+	created, err := c.CreateUsersBatch(context.Background(), batch, false)
 	if err != nil {
 		t.Fatalf("CreateUsersBatch: %v", err)
 	}
 
-	if gotMethod != http.MethodPost || gotPath != "/v2/users/batch" {
-		t.Errorf("request = %s %s, want POST /v2/users/batch", gotMethod, gotPath)
+	if gotMethod != http.MethodPost || gotPath != "/v1/users/batch" {
+		t.Errorf("request = %s %s, want POST /v1/users/batch", gotMethod, gotPath)
 	}
 	if gotBody.BypassEmailConfirmation {
 		t.Error("bypassEmailConfirmation = true, want false")
@@ -146,8 +149,8 @@ func TestCreateUsersBatch(t *testing.T) {
 	if len(gotBody.UsersList) != 2 || gotBody.UsersList[0].UUID != "id-1" || gotBody.UsersList[1].Email != "c@d.com" {
 		t.Errorf("usersList = %+v", gotBody.UsersList)
 	}
-	if job.JobID != "1215" || job.StatusURL != "/v2/users/batch/1215" {
-		t.Errorf("job = %+v", job)
+	if len(created) != 2 || created[0].ID != "e1" || created[1].UUID != "id-2" {
+		t.Errorf("created = %+v", created)
 	}
 }
 
@@ -229,6 +232,12 @@ func TestRedactPasswords(t *testing.T) {
 	}
 	if !strings.Contains(got, `"password":"[redacted]"`) {
 		t.Errorf("password not masked: %s", got)
+	}
+
+	// Response bodies carry password-ish keys too (e.g. xmppPassword).
+	resp := redactPasswords([]byte(`{"user":{"uuid":"id-1","xmppPassword":"xmpp-secret"}}`))
+	if strings.Contains(resp, "xmpp-secret") || !strings.Contains(resp, `"xmppPassword":"[redacted]"`) {
+		t.Errorf("xmppPassword not masked: %s", resp)
 	}
 	// Everything else must survive redaction.
 	for _, want := range []string{"a@b.com", "id-1", `"bypassEmailConfirmation":true`} {

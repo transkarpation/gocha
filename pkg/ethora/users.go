@@ -51,26 +51,23 @@ type batchCreateRequest struct {
 	UsersList               []BatchUser `json:"usersList"`
 }
 
-// BatchJob describes the asynchronous batch-creation job Ethora starts:
-// the endpoint responds 202 and the job can be polled via StatusURL.
-type BatchJob struct {
-	JobID     string `json:"jobId"`
-	StatusURL string `json:"statusUrl"`
+type batchCreateResponse struct {
+	Results []User `json:"results"`
 }
 
-// CreateUsersBatch registers users via POST /v2/users/batch.
-// The call is asynchronous on the Ethora side — a successful response
-// only means the job was accepted.
-func (c *Client) CreateUsersBatch(ctx context.Context, users []BatchUser, bypassEmailConfirmation bool) (BatchJob, error) {
+// CreateUsersBatch registers users via POST /v1/users/batch and returns
+// the created accounts. Unlike the asynchronous v2 endpoint (202 + jobId),
+// v1 creates synchronously and responds 200 with the users in "results".
+func (c *Client) CreateUsersBatch(ctx context.Context, users []BatchUser, bypassEmailConfirmation bool) ([]User, error) {
 	req := batchCreateRequest{
 		BypassEmailConfirmation: bypassEmailConfirmation,
 		UsersList:               users,
 	}
-	var job BatchJob
-	if err := c.do(ctx, http.MethodPost, "/v2/users/batch", req, &job); err != nil {
-		return BatchJob{}, err
+	var resp batchCreateResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/users/batch", req, &resp); err != nil {
+		return nil, err
 	}
-	return job, nil
+	return resp.Results, nil
 }
 
 type deleteUsersBatchRequest struct {

@@ -25,21 +25,22 @@ func NewEthora(client *ethora.Client) *Ethora {
 // MirrorUser creates the user in Ethora: our email and user id, random
 // names and a one-off password (never stored — the server talks to Ethora
 // with its app JWT, not with user credentials). Email confirmation is
-// bypassed so mirrored users don't receive Ethora emails. Creation is
-// asynchronous on the Ethora side — success means the job was accepted.
+// bypassed so mirrored users don't receive Ethora emails.
 func (e *Ethora) MirrorUser(ctx context.Context, u users.User) error {
 	bu, err := ethora.RandomBatchUser(u.Email, u.ID.Hex())
 	if err != nil {
 		return err
 	}
-	job, err := e.client.CreateUsersBatch(ctx, []ethora.BatchUser{bu}, true)
+	created, err := e.client.CreateUsersBatch(ctx, []ethora.BatchUser{bu}, true)
 	if err != nil {
 		return fmt.Errorf("create ethora user: %w", err)
 	}
-	// Creation is async on the Ethora side: this logs acceptance of the
-	// job, which is as close to "created" as the API reports.
+	ethoraID := ""
+	if len(created) > 0 {
+		ethoraID = created[0].ID
+	}
 	slog.InfoContext(ctx, "user created on ethora",
-		"user_id", u.ID.Hex(), "email", u.Email, "job_id", job.JobID)
+		"user_id", u.ID.Hex(), "email", u.Email, "ethora_id", ethoraID)
 	return nil
 }
 
