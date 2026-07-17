@@ -97,33 +97,40 @@ func credentialFlags(name string, args []string) (email, password, configPath st
 // storage, the external chat mirror (nil when Ethora credentials are not
 // configured) and a cleanup func that disconnects the client.
 func openStorage(ctx context.Context, configPath string) (*users.Storage, users.ChatBackend, func(), error) {
+	storage, chat, _, cleanup, err := openStorageWithConfig(ctx, configPath)
+	return storage, chat, cleanup, err
+}
+
+// openStorageWithConfig is openStorage for commands that also need the
+// config itself (login signs an access token with auth.jwt_secret).
+func openStorageWithConfig(ctx context.Context, configPath string) (*users.Storage, users.ChatBackend, config.Config, func(), error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, config.Config{}, nil, err
 	}
 
 	client, err := mongo.Connect(options.Client().ApplyURI(cfg.Mongo.URI))
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("connect to mongo: %w", err)
+		return nil, nil, config.Config{}, nil, fmt.Errorf("connect to mongo: %w", err)
 	}
 	cleanup := func() { client.Disconnect(context.Background()) }
 
 	if err := client.Ping(ctx, nil); err != nil {
 		cleanup()
-		return nil, nil, nil, fmt.Errorf("ping mongo: %w", err)
+		return nil, nil, config.Config{}, nil, fmt.Errorf("ping mongo: %w", err)
 	}
 
 	storage, err := users.NewStorage(ctx, client.Database(cfg.Mongo.Database))
 	if err != nil {
 		cleanup()
-		return nil, nil, nil, fmt.Errorf("init storage: %w", err)
+		return nil, nil, config.Config{}, nil, fmt.Errorf("init storage: %w", err)
 	}
 
 	var chat users.ChatBackend
 	if cfg.Ethora.APIKey != "" && cfg.Ethora.APISecret != "" {
 		chat = mirror.NewEthora(ethora.NewClient(cfg.Ethora.BaseURL, cfg.Ethora.APIKey, cfg.Ethora.APISecret))
 	}
-	return storage, chat, cleanup, nil
+	return storage, chat, cfg, cleanup, nil
 }
 
 func runRegister(args []string) error {
@@ -386,7 +393,7 @@ func runLogin(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
 	defer cancel()
 
-	storage, _, cleanup, err := openStorage(ctx, configPath)
+	storage, _, cfg, cleanup, err := openStorageWithConfig(ctx, configPath)
 	if err != nil {
 		return err
 	}
@@ -404,5 +411,21 @@ func runLogin(args []string) error {
 	fmt.Printf("login ok: id=%s email=%s\n", u.ID.Hex(), u.Email)
 	fmt.Printf("session_token=%s\n", sess.Token)
 	fmt.Printf("expires_at=%s\n", sess.ExpiresAt.Format(time.RFC3339))
+
+	// Same payload the HTTP login returns, for scripts that need it.
+	if cfg.Auth.JWTSecret != "" {
+		token, err := users.IssueToken(u, []byte(cfg.Auth.JWTSecret), users.SessionTTL)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("access_token=%s\n", token)
+	}
+	switch creds, err := storage.ChatCredentialsByUserID(ctx, u.ID); {
+	case err == nil:
+		fmt.Printf("xmpp_username=%s\n", creds.XMPPUsername)
+		fmt.Printf("xmpp_password=%s\n", creds.XMPPPassword)
+	case !errors.Is(err, users.ErrNotFound):
+		return err
+	}
 	return nil
 }

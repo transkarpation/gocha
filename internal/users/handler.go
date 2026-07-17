@@ -16,7 +16,9 @@ import (
 )
 
 const (
-	sessionTTL        = 24 * time.Hour
+	// SessionTTL is how long a session and its access token stay valid.
+	SessionTTL = 24 * time.Hour
+
 	sessionCookieName = "session"
 	minPasswordLen    = 8
 
@@ -25,12 +27,13 @@ const (
 )
 
 type Handler struct {
-	storage *Storage
-	chat    ChatBackend // nil disables mirroring
+	storage   *Storage
+	chat      ChatBackend // nil disables mirroring
+	jwtSecret []byte      // signs the tokens Register/Login hand out
 }
 
-func NewHandler(storage *Storage, chat ChatBackend) *Handler {
-	return &Handler{storage: storage, chat: chat}
+func NewHandler(storage *Storage, chat ChatBackend, jwtSecret []byte) *Handler {
+	return &Handler{storage: storage, chat: chat, jwtSecret: jwtSecret}
 }
 
 type credentialsRequest struct {
@@ -246,12 +249,25 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// respondWithSession creates a session for the user, sets the cookie
-// and writes the JSON response. Shared by Register and Login.
+// respondWithSession creates a session for the user, signs an access
+// token, sets the cookie and writes the JSON response. Shared by Register
+// and Login.
+//
+// The response also carries the XMPP credentials of the user's mirrored
+// chat account so the client can connect to the XMPP server itself. They
+// are omitted when the user has none (mirroring disabled or it failed at
+// registration) — that must not break signing in.
 func (h *Handler) respondWithSession(w http.ResponseWriter, r *http.Request, u User, status int) {
 	sess, err := IssueSession(r.Context(), h.storage, u)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "issue session", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	token, err := IssueToken(u, h.jwtSecret, SessionTTL)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "issue access token", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -265,13 +281,25 @@ func (h *Handler) respondWithSession(w http.ResponseWriter, r *http.Request, u U
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	body := map[string]any{
 		"id":            u.ID.Hex(),
 		"email":         u.Email,
 		"session_token": sess.Token,
-	})
+		"access_token":  token,
+		"expires_at":    sess.ExpiresAt,
+	}
+	switch creds, err := h.storage.ChatCredentialsByUserID(r.Context(), u.ID); {
+	case err == nil:
+		body["xmpp_username"] = creds.XMPPUsername
+		body["xmpp_password"] = creds.XMPPPassword
+	case !errors.Is(err, ErrNotFound):
+		slog.ErrorContext(r.Context(), "load chat credentials",
+			"user_id", u.ID.Hex(), "error", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(body)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

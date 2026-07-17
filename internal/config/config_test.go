@@ -20,6 +20,13 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Ethora.BaseURL != "https://api.chat.ethora.com/" {
 		t.Errorf("ethora base_url = %q, want default", cfg.Ethora.BaseURL)
 	}
+	if cfg.Ethora.XMPPWSURL != "wss://xmpp.chat.ethora.com/ws" {
+		t.Errorf("ethora xmpp_ws_url = %q, want default", cfg.Ethora.XMPPWSURL)
+	}
+	// Secrets must never have a default.
+	if cfg.Auth.JWTSecret != "" {
+		t.Errorf("auth.jwt_secret = %q, want empty by default", cfg.Auth.JWTSecret)
+	}
 }
 
 func TestLoadFromFile(t *testing.T) {
@@ -33,6 +40,8 @@ mongo:
 ethora:
   api_key: file-key
   api_secret: file-secret
+auth:
+  jwt_secret: file-jwt-secret
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
@@ -48,6 +57,9 @@ ethora:
 	if cfg.Ethora.APIKey != "file-key" || cfg.Ethora.APISecret != "file-secret" {
 		t.Errorf("ethora = %+v, want values from file", cfg.Ethora)
 	}
+	if cfg.Auth.JWTSecret != "file-jwt-secret" {
+		t.Errorf("auth.jwt_secret = %q, want value from file", cfg.Auth.JWTSecret)
+	}
 }
 
 func TestEnvOverrides(t *testing.T) {
@@ -57,10 +69,18 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("ETHORA_BASE_URL", "https://env.example.com/")
 	t.Setenv("ETHORA_API_KEY", "env-key")
 	t.Setenv("ETHORA_API_SECRET", "env-secret")
+	t.Setenv("ETHORA_XMPP_WS_URL", "wss://env.example.com/ws")
+	t.Setenv("JWT_SECRET", "env-jwt-secret")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Ethora.XMPPWSURL != "wss://env.example.com/ws" {
+		t.Errorf("xmpp_ws_url env override not applied: %q", cfg.Ethora.XMPPWSURL)
+	}
+	if cfg.Auth.JWTSecret != "env-jwt-secret" {
+		t.Errorf("jwt_secret env override not applied: %q", cfg.Auth.JWTSecret)
 	}
 	if cfg.Server.Port != 7070 || cfg.Mongo.URI != "mongodb://env:27017" || cfg.Mongo.Database != "envdb" {
 		t.Errorf("env overrides not applied: %+v", cfg)

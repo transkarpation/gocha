@@ -282,7 +282,7 @@ func IssueSession(ctx context.Context, s *Storage, u User) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	return s.CreateSession(ctx, u.ID, token, sessionTTL)
+	return s.CreateSession(ctx, u.ID, token, SessionTTL)
 }
 
 func newSessionToken() (string, error) {

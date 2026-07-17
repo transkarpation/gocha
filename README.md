@@ -46,6 +46,7 @@ Priority: **env vars > `config.yaml` > built-in defaults**.
 | Ethora API | `ethora.base_url` | `ETHORA_BASE_URL` | `https://api.chat.ethora.com/` |
 | Ethora credentials | `ethora.api_key` / `ethora.api_secret` | `ETHORA_API_KEY` / `ETHORA_API_SECRET` | unset (mirroring disabled) |
 | XMPP websocket | `ethora.xmpp_ws_url` | `ETHORA_XMPP_WS_URL` | `wss://xmpp.chat.ethora.com/ws` |
+| Access token key | `auth.jwt_secret` | `JWT_SECRET` | none — **required**, the server won't start without it (`openssl rand -hex 32`) |
 
 `config.yaml` is gitignored; copy it from `config.example.yaml`. A missing
 file is fine — defaults are used. Both binaries accept `-config <path>`.
@@ -57,8 +58,28 @@ Public:
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/healthcheck` | liveness probe |
-| `POST` | `/register` | create account (`email`, `password`), returns a session |
-| `POST` | `/login` | verify credentials, returns a session |
+| `POST` | `/register` | create account (`email`, `password`), returns the sign-in payload |
+| `POST` | `/login` | verify credentials, returns the sign-in payload |
+
+Both return the same payload:
+
+```json
+{
+  "id": "6a59d151811e1b8ac4bdd3fa",
+  "email": "a@b.com",
+  "session_token": "f31d1bea…",
+  "access_token": "eyJhbGciOiJIUzI1NiIs…",
+  "expires_at": "2026-07-18T06:53:05Z",
+  "xmpp_username": "6a58fbd8…_6a59d151…",
+  "xmpp_password": "dtmQJmIo7N"
+}
+```
+
+`access_token` is a JWT (HS256, `auth.jwt_secret`) with `sub`, `email`,
+`role`, `iat` and `exp` claims. `session_token` is what the API itself
+authenticates with (see below). The `xmpp_*` fields are the credentials of
+the user's mirrored chat account — connect to `ethora.xmpp_ws_url` with
+them; they are absent when the user has no mirror.
 
 Authenticated (send `Authorization: Bearer <token>` or the `session` cookie):
 

@@ -10,16 +10,20 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/transkarpation/gocha/internal/permissions"
 )
+
+// testJWTSecret signs access tokens in handler tests.
+var testJWTSecret = []byte("test-jwt-secret")
 
 // authTestEnv registers a user, issues a session and returns a handler
 // that reports whether the request reached it with the user in context.
 func authTestEnv(t *testing.T) (*Storage, *Handler) {
 	t.Helper()
 	s := newTestStorage(t)
-	return s, NewHandler(s, nil)
+	return s, NewHandler(s, nil, testJWTSecret)
 }
 
 func echoUser(t *testing.T) http.HandlerFunc {
@@ -30,6 +34,119 @@ func echoUser(t *testing.T) http.HandlerFunc {
 			t.Error("user missing from context inside protected handler")
 		}
 		w.Write([]byte(u.Email))
+	}
+}
+
+// TestRegisterLoginResponse covers what a client gets when signing in:
+// a session, a JWT access token signed with our secret, and the XMPP
+// credentials of its mirrored chat account.
+func TestRegisterLoginResponse(t *testing.T) {
+	s := newTestStorage(t)
+	chat := &fakeChat{}
+	h := NewHandler(s, chat, testJWTSecret)
+
+	body := strings.NewReader(`{"email":"alice@example.com","password":"secret123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/register", body)
+	rec := httptest.NewRecorder()
+	h.Register(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	userID, _ := got["id"].(string)
+	if userID == "" {
+		t.Fatalf("no user id in response: %v", got)
+	}
+	if got["session_token"] == "" {
+		t.Error("no session_token in response")
+	}
+	if got["xmpp_username"] != "xmpp-"+userID || got["xmpp_password"] != "xmpp-pass-"+userID {
+		t.Errorf("xmpp credentials = %v / %v", got["xmpp_username"], got["xmpp_password"])
+	}
+
+	// The access token must verify with our secret and describe the user.
+	token, _ := got["access_token"].(string)
+	if token == "" {
+		t.Fatal("no access_token in response")
+	}
+	claims := jwt.MapClaims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(tok *jwt.Token) (any, error) {
+		if tok.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("unexpected signing method")
+		}
+		return testJWTSecret, nil
+	})
+	if err != nil || !parsed.Valid {
+		t.Fatalf("parse access token: %v", err)
+	}
+	if claims["sub"] != userID {
+		t.Errorf("claim sub = %v, want %s", claims["sub"], userID)
+	}
+	if claims["email"] != "alice@example.com" {
+		t.Errorf("claim email = %v", claims["email"])
+	}
+	if claims["role"] != string(permissions.RoleUser) {
+		t.Errorf("claim role = %v, want user", claims["role"])
+	}
+	if _, err := claims.GetExpirationTime(); err != nil {
+		t.Errorf("claim exp: %v", err)
+	}
+	// A token signed with another secret must not verify.
+	if _, err := jwt.Parse(token, func(*jwt.Token) (any, error) {
+		return []byte("wrong-secret"), nil
+	}); err == nil {
+		t.Error("access token verified with the wrong secret")
+	}
+
+	// Login hands out the same material.
+	body = strings.NewReader(`{"email":"alice@example.com","password":"secret123"}`)
+	req = httptest.NewRequest(http.MethodPost, "/login", body)
+	rec = httptest.NewRecorder()
+	h.Login(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var loggedIn map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &loggedIn); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	for _, key := range []string{"access_token", "session_token", "xmpp_username", "xmpp_password"} {
+		if v, _ := loggedIn[key].(string); v == "" {
+			t.Errorf("login response missing %s", key)
+		}
+	}
+}
+
+// A user without a mirrored chat account must still be able to sign in.
+func TestLoginWithoutChatCredentials(t *testing.T) {
+	s := newTestStorage(t)
+	h := NewHandler(s, nil, testJWTSecret)
+
+	if _, err := Register(context.Background(), s, nil, "nomirror@example.com", "secret123", permissions.RoleUser); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	body := strings.NewReader(`{"email":"nomirror@example.com","password":"secret123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/login", body)
+	rec := httptest.NewRecorder()
+	h.Login(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if _, ok := got["xmpp_username"]; ok {
+		t.Errorf("xmpp_username present without a mirror: %v", got)
+	}
+	if v, _ := got["access_token"].(string); v == "" {
+		t.Error("no access_token in response")
 	}
 }
 

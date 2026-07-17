@@ -43,7 +43,7 @@ func chatBackend(cfg config.EthoraConfig) users.ChatBackend {
 	return mirror.NewEthora(ethora.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APISecret))
 }
 
-func setupRouter(storage *users.Storage, chatStorage *chats.Storage, chat users.ChatBackend) chi.Router {
+func setupRouter(storage *users.Storage, chatStorage *chats.Storage, chat users.ChatBackend, jwtSecret []byte) chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
@@ -52,7 +52,7 @@ func setupRouter(storage *users.Storage, chatStorage *chats.Storage, chat users.
 
 	r.Get("/healthcheck", handleHealthcheck)
 
-	h := users.NewHandler(storage, chat)
+	h := users.NewHandler(storage, chat, jwtSecret)
 	r.Post("/register", h.Register)
 	r.Post("/login", h.Login)
 
@@ -114,6 +114,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Signing user tokens with an empty key would make them forgeable.
+	if cfg.Auth.JWTSecret == "" {
+		slog.Error("auth.jwt_secret is not configured (set it in the config file or JWT_SECRET)")
+		os.Exit(1)
+	}
+
 	client, err := mongo.Connect(options.Client().ApplyURI(cfg.Mongo.URI))
 	if err != nil {
 		slog.Error("connect to mongo", "error", err)
@@ -157,7 +163,7 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: setupRouter(storage, chatStorage, chat),
+		Handler: setupRouter(storage, chatStorage, chat, []byte(cfg.Auth.JWTSecret)),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

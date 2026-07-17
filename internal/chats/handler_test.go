@@ -88,7 +88,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("chats.NewStorage: %v", err)
 	}
 
-	uh := users.NewHandler(ustorage, nil)
+	uh := users.NewHandler(ustorage, nil, []byte("test-jwt-secret"))
 	ch := NewHandler(cstorage, ustorage)
 
 	r := chi.NewRouter()

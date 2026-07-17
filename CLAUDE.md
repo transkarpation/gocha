@@ -135,6 +135,18 @@ created only via `gochactrl register --role admin`. Users stored before roles
 existed have no `role` field — storage normalizes that to `user` on read, and
 `permissions.Has` treats empty role as `user` too.
 
+Sign-in payload: `Register`/`Login` (HTTP and `gochactrl login`) hand the
+client a session token, a JWT access token and the XMPP credentials of its
+mirrored account (`xmpp_username`/`xmpp_password`, omitted when the user has
+no mirror — that must never break signing in). The JWT is signed HS256 with
+`auth.jwt_secret` (env `JWT_SECRET`; claims sub/email/role/iat/exp, TTL
+`users.SessionTTL`) — deliberately our own key, NOT `ethora.api_secret`:
+never reuse a third party's credential as our signing key. The secret has no
+default and `main` refuses to start without it (an empty HS256 key makes
+tokens forgeable). `users.IssueToken` in `token.go` is the only signer.
+The access token is issued but not yet accepted by `Auth` — that middleware
+still takes session tokens only.
+
 Sessions: opaque random tokens (not JWT) stored in the `sessions` collection.
 `Auth` middleware accepts `Authorization: Bearer <token>` (priority) or the
 `session` HttpOnly cookie, loads the user and stores it in the request context;

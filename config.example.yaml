@@ -1,7 +1,7 @@
 # Application configuration template.
 # Copy to config.yaml (gitignored) and adjust for your environment.
 # Env overrides: APP_PORT, MONGO_URI, MONGO_DB, ETHORA_API_KEY, ETHORA_API_SECRET,
-# ETHORA_XMPP_WS_URL.
+# ETHORA_XMPP_WS_URL, JWT_SECRET.
 server:
   port: 8080
 
@@ -16,3 +16,9 @@ ethora:
   api_secret: your-api-secret
   # XMPP websocket endpoint the system account connects to at server startup
   xmpp_ws_url: wss://xmpp.chat.ethora.com/ws
+
+# Signing key for the access tokens register/login hand out. No default —
+# the server refuses to start without it. Generate one with:
+#   openssl rand -hex 32
+auth:
+  jwt_secret: your-jwt-secret

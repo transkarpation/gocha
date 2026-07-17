@@ -12,10 +12,18 @@ type Config struct {
 	Server ServerConfig `yaml:"server"`
 	Mongo  MongoConfig  `yaml:"mongo"`
 	Ethora EthoraConfig `yaml:"ethora"`
+	Auth   AuthConfig   `yaml:"auth"`
 }
 
 type ServerConfig struct {
 	Port int `yaml:"port"`
+}
+
+// AuthConfig holds our own signing material. JWTSecret deliberately has no
+// default: an empty HS256 key would make user tokens forgeable, so the
+// server refuses to start without it.
+type AuthConfig struct {
+	JWTSecret string `yaml:"jwt_secret"`
 }
 
 type MongoConfig struct {
@@ -46,8 +54,8 @@ func defaults() Config {
 
 // Load reads the config file and applies env overrides
 // (APP_PORT, MONGO_URI, MONGO_DB, ETHORA_BASE_URL, ETHORA_API_KEY,
-// ETHORA_API_SECRET, ETHORA_XMPP_WS_URL) on top of it. A missing file is
-// not an error — defaults are used instead.
+// ETHORA_API_SECRET, ETHORA_XMPP_WS_URL, JWT_SECRET) on top of it.
+// A missing file is not an error — defaults are used instead.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 
@@ -87,6 +95,9 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("ETHORA_XMPP_WS_URL"); v != "" {
 		cfg.Ethora.XMPPWSURL = v
+	}
+	if v := os.Getenv("JWT_SECRET"); v != "" {
+		cfg.Auth.JWTSecret = v
 	}
 
 	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
