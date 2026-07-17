@@ -76,10 +76,11 @@ Two entry points share the `internal/` packages:
 - `main.go` — HTTP server (chi). `setupRouter` wires all routes; protected
   routes live in the `r.Group` that applies `users.Handler.Auth`.
 - `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`,
-  `restore`, `list`, `delete-all`, `system` subcommands; all except `login`
-  bypass permission checks by design, `delete-all` requires `--yes`,
-  `system` prints the system account incl. its XMPP credentials). There is
-  deliberately no HTTP route for bulk deletion.
+  `restore`, `list`, `delete-all`, `system`, `init-system` subcommands; all
+  except `login` bypass permission checks by design, `delete-all` requires
+  `--yes`, `system` prints the system account incl. its XMPP credentials,
+  `init-system` creates it and errors with ErrSystemExists when it is
+  already there). There is deliberately no HTTP route for bulk deletion.
   Its results (`session_token=...`) print via `fmt` to stdout on purpose —
   scripts parse them; don't convert to slog.
 
@@ -111,7 +112,10 @@ idempotent ensure of `users.SystemEmail` (`system@gocha.internal`), the
 account service messages are sent from. Created with a thrown-away random
 password (login impossible; the server acts via storage, not sessions),
 mirrored to Ethora like any user, restored automatically if soft-deleted.
-After `delete-all` it reappears on the next server start.
+`delete-all` never touches it (nor its sessions, chat credentials or Ethora
+mirror); only a targeted `gochactrl delete --email ... --hard` removes it.
+`users.InitSystemUser` (CLI `init-system`) is the non-idempotent variant:
+create or fail with ErrSystemExists.
 
 Roles and permissions (`internal/permissions`): the single registry of roles
 (`admin`, `user`) and per-entity permissions (`chats:create`, ...). **Every new

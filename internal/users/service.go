@@ -38,6 +38,7 @@ var (
 	ErrInvalidRole        = errors.New(`role must be "admin" or "user"`)
 	ErrInvalidCredentials = errors.New("invalid email or password")
 	ErrNothingToUpdate    = errors.New("nothing to update")
+	ErrSystemExists       = errors.New("system account already exists")
 )
 
 // SystemEmail identifies the server's own account — service messages are
@@ -62,21 +63,41 @@ func EnsureSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, 
 		slog.InfoContext(ctx, "system user restored", "user_id", u.ID.Hex())
 		return u, nil
 	case errors.Is(err, ErrNotFound):
-		// The password is never needed again: the server acts through
-		// storage directly, not through login.
-		password, err := newSessionToken()
-		if err != nil {
-			return User{}, err
-		}
-		u, err = Register(ctx, s, chat, SystemEmail, password, permissions.RoleUser)
-		if err != nil {
-			return User{}, err
-		}
-		slog.InfoContext(ctx, "system user created", "user_id", u.ID.Hex(), "email", u.Email)
-		return u, nil
+		return createSystemUser(ctx, s, chat)
 	default:
 		return User{}, err
 	}
+}
+
+// InitSystemUser creates the system account and fails with ErrSystemExists
+// when it is already there (soft-deleted counts as existing). Used by
+// gochactrl init-system; the server startup path is the idempotent
+// EnsureSystemUser.
+func InitSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, error) {
+	_, err := s.AnyUserByEmail(ctx, SystemEmail)
+	switch {
+	case err == nil:
+		return User{}, ErrSystemExists
+	case errors.Is(err, ErrNotFound):
+		return createSystemUser(ctx, s, chat)
+	default:
+		return User{}, err
+	}
+}
+
+func createSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, error) {
+	// The password is never needed again: the server acts through
+	// storage directly, not through login.
+	password, err := newSessionToken()
+	if err != nil {
+		return User{}, err
+	}
+	u, err := Register(ctx, s, chat, SystemEmail, password, permissions.RoleUser)
+	if err != nil {
+		return User{}, err
+	}
+	slog.InfoContext(ctx, "system user created", "user_id", u.ID.Hex(), "email", u.Email)
+	return u, nil
 }
 
 // Register validates credentials, hashes the password and stores the user.
@@ -201,15 +222,19 @@ func HardDeleteUser(ctx context.Context, s *Storage, chat ChatBackend, id bson.O
 }
 
 // DeleteAllUsers wipes every user and session and (best-effort) all
-// mirrored chat accounts. Returns the number of deleted users.
+// mirrored chat accounts. The system account is never deleted — neither
+// here nor its chat mirror. Returns the number of deleted users.
 // Used by gochactrl only — there is deliberately no HTTP route for this.
 func DeleteAllUsers(ctx context.Context, s *Storage, chat ChatBackend) (int64, error) {
 	ids, err := s.AllUserIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if len(ids) == 0 {
-		return 0, nil
+	sysID := ""
+	if sys, err := s.AnyUserByEmail(ctx, SystemEmail); err == nil {
+		sysID = sys.ID.Hex()
+	} else if !errors.Is(err, ErrNotFound) {
+		return 0, err
 	}
 
 	count, err := s.DeleteAllUsers(ctx)
@@ -218,13 +243,17 @@ func DeleteAllUsers(ctx context.Context, s *Storage, chat ChatBackend) (int64, e
 	}
 
 	if chat != nil {
-		hexIDs := make([]string, len(ids))
-		for i, id := range ids {
-			hexIDs[i] = id.Hex()
+		hexIDs := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if id.Hex() != sysID {
+				hexIDs = append(hexIDs, id.Hex())
+			}
 		}
-		if err := chat.DeleteUsers(ctx, hexIDs); err != nil {
-			slog.WarnContext(ctx, "delete users from chat backend",
-				"count", len(hexIDs), "error", err)
+		if len(hexIDs) > 0 {
+			if err := chat.DeleteUsers(ctx, hexIDs); err != nil {
+				slog.WarnContext(ctx, "delete users from chat backend",
+					"count", len(hexIDs), "error", err)
+			}
 		}
 	}
 	return count, nil

@@ -43,6 +43,8 @@ func main() {
 		err = runRestore(os.Args[2:])
 	case "system":
 		err = runSystem(os.Args[2:])
+	case "init-system":
+		err = runInitSystem(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -58,14 +60,16 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `Usage: gochactrl <command> [flags]
 
 Commands:
-  register   create a new user (--role admin|user, default user)
-  login      verify credentials and issue a session token
-  delete     soft-delete a user by --id or --email (no permission checks);
-             --hard removes permanently including the Ethora mirror
-  restore    restore a soft-deleted user by --id or --email
-  list       list users (--limit, --offset; no permission checks)
-  delete-all delete ALL users and sessions (requires --yes)
-  system     show the system account and its stored XMPP credentials
+  register    create a new user (--role admin|user, default user)
+  login       verify credentials and issue a session token
+  delete      soft-delete a user by --id or --email (no permission checks);
+              --hard removes permanently including the Ethora mirror
+  restore     restore a soft-deleted user by --id or --email
+  list        list users (--limit, --offset; no permission checks)
+  delete-all  delete ALL users and sessions except the system account
+              (requires --yes)
+  system      show the system account and its stored XMPP credentials
+  init-system create the system account; fails if it already exists
 
 Common flags:
   --email <addr> --password <pass> [--config <path>]
@@ -289,6 +293,28 @@ func runSystem(args []string) error {
 		fmt.Printf("xmpp_password=%s\n", creds.XMPPPassword)
 		fmt.Printf("xmpp_updated_at=%s\n", creds.UpdatedAt.Format(time.RFC3339))
 	}
+	return nil
+}
+
+func runInitSystem(args []string) error {
+	fs := flag.NewFlagSet("init-system", flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "path to config file")
+	fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoTimeout)
+	defer cancel()
+
+	storage, chat, cleanup, err := openStorage(ctx, *configPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	u, err := users.InitSystemUser(ctx, storage, chat)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("system user created: id=%s email=%s\n", u.ID.Hex(), u.Email)
 	return nil
 }
 

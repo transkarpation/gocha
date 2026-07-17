@@ -278,16 +278,28 @@ func (s *Storage) AllUserIDs(ctx context.Context) ([]bson.ObjectID, error) {
 }
 
 // DeleteAllUsers removes every user, every session and all stored chat
-// credentials.
+// credentials — except the system account, which the server depends on:
+// it survives together with its sessions and chat credentials.
 func (s *Storage) DeleteAllUsers(ctx context.Context) (int64, error) {
-	res, err := s.users.DeleteMany(ctx, bson.D{})
+	userFilter, sessFilter, credFilter := bson.D{}, bson.D{}, bson.D{}
+	sys, err := s.AnyUserByEmail(ctx, SystemEmail)
+	switch {
+	case err == nil:
+		userFilter = bson.D{{Key: "_id", Value: bson.D{{Key: "$ne", Value: sys.ID}}}}
+		sessFilter = bson.D{{Key: "user_id", Value: bson.D{{Key: "$ne", Value: sys.ID}}}}
+		credFilter = bson.D{{Key: "_id", Value: bson.D{{Key: "$ne", Value: sys.ID}}}}
+	case !errors.Is(err, ErrNotFound):
+		return 0, err
+	}
+
+	res, err := s.users.DeleteMany(ctx, userFilter)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := s.sessions.DeleteMany(ctx, bson.D{}); err != nil {
+	if _, err := s.sessions.DeleteMany(ctx, sessFilter); err != nil {
 		return res.DeletedCount, err
 	}
-	if _, err := s.chatCreds.DeleteMany(ctx, bson.D{}); err != nil {
+	if _, err := s.chatCreds.DeleteMany(ctx, credFilter); err != nil {
 		return res.DeletedCount, err
 	}
 	return res.DeletedCount, nil

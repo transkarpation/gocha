@@ -458,6 +458,69 @@ func TestDeleteAllUsers(t *testing.T) {
 			t.Errorf("chat.deleted[%d] = %s, want %s", i, chat.deleted[i], id)
 		}
 	}
+
+	t.Run("system account survives", func(t *testing.T) {
+		sys, err := EnsureSystemUser(ctx, s, chat)
+		if err != nil {
+			t.Fatalf("EnsureSystemUser: %v", err)
+		}
+		if _, err := Register(ctx, s, chat, "mortal@example.com", "secret123", permissions.RoleUser); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+
+		chat.deleted = nil
+		count, err := DeleteAllUsers(ctx, s, chat)
+		if err != nil {
+			t.Fatalf("DeleteAllUsers: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("count = %d, want 1 (system not counted)", count)
+		}
+		if _, err := s.UserByID(ctx, sys.ID); err != nil {
+			t.Errorf("system user gone after delete-all: %v", err)
+		}
+		if _, err := s.ChatCredentialsByUserID(ctx, sys.ID); err != nil {
+			t.Errorf("system chat credentials gone after delete-all: %v", err)
+		}
+		for _, id := range chat.deleted {
+			if id == sys.ID.Hex() {
+				t.Error("system user's chat mirror was deleted")
+			}
+		}
+		if len(chat.deleted) != 1 {
+			t.Errorf("chat deleted = %v, want only the mortal user", chat.deleted)
+		}
+	})
+}
+
+func TestInitSystemUser(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	chat := &fakeChat{}
+
+	u, err := InitSystemUser(ctx, s, chat)
+	if err != nil {
+		t.Fatalf("InitSystemUser: %v", err)
+	}
+	if u.Email != SystemEmail {
+		t.Errorf("email = %q, want %q", u.Email, SystemEmail)
+	}
+	if len(chat.mirrored) != 1 {
+		t.Errorf("mirrored = %+v, want the system user", chat.mirrored)
+	}
+
+	// Existing account is an error, not an ensure.
+	if _, err := InitSystemUser(ctx, s, chat); !errors.Is(err, ErrSystemExists) {
+		t.Errorf("second InitSystemUser: %v, want ErrSystemExists", err)
+	}
+
+	// A soft-deleted system account still counts as existing.
+	if err := DeleteUser(ctx, s, u.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if _, err := InitSystemUser(ctx, s, chat); !errors.Is(err, ErrSystemExists) {
+		t.Errorf("InitSystemUser over soft-deleted: %v, want ErrSystemExists", err)
+	}
 }
 
 func TestLegacyUserRoleNormalization(t *testing.T) {
