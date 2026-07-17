@@ -8,9 +8,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/transkarpation/gocha/internal/permissions"
 )
@@ -150,6 +152,131 @@ func TestLoginWithoutChatCredentials(t *testing.T) {
 	}
 }
 
+// TestAuthWithAccessToken covers the JWT half of Auth: a forged, expired
+// or stale token must never authenticate a request.
+func TestAuthWithAccessToken(t *testing.T) {
+	s, h := authTestEnv(t)
+	ctx := context.Background()
+
+	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	protected := h.Auth(echoUser(t))
+
+	// signToken mints a token with arbitrary claims/method/key so the
+	// rejection paths can be exercised.
+	signToken := func(t *testing.T, method jwt.SigningMethod, key any, claims jwt.MapClaims) string {
+		t.Helper()
+		token, err := jwt.NewWithClaims(method, claims).SignedString(key)
+		if err != nil {
+			t.Fatalf("sign token: %v", err)
+		}
+		return token
+	}
+	validClaims := func() jwt.MapClaims {
+		return jwt.MapClaims{
+			"sub": u.ID.Hex(),
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}
+	}
+
+	tests := []struct {
+		name       string
+		token      func(t *testing.T) string
+		wantStatus int
+	}{
+		{"valid", func(t *testing.T) string {
+			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, validClaims())
+		}, http.StatusOK},
+		{"wrong secret", func(t *testing.T) string {
+			return signToken(t, jwt.SigningMethodHS256, []byte("attacker-secret"), validClaims())
+		}, http.StatusUnauthorized},
+		{"expired", func(t *testing.T) string {
+			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{
+				"sub": u.ID.Hex(),
+				"exp": time.Now().Add(-time.Minute).Unix(),
+			})
+		}, http.StatusUnauthorized},
+		{"no expiry", func(t *testing.T) string {
+			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{"sub": u.ID.Hex()})
+		}, http.StatusUnauthorized},
+		{"alg none", func(t *testing.T) string {
+			return signToken(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, validClaims())
+		}, http.StatusUnauthorized},
+		{"unknown user", func(t *testing.T) string {
+			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{
+				"sub": bson.NewObjectID().Hex(),
+				"exp": time.Now().Add(time.Hour).Unix(),
+			})
+		}, http.StatusUnauthorized},
+		{"garbage subject", func(t *testing.T) string {
+			return signToken(t, jwt.SigningMethodHS256, testJWTSecret, jwt.MapClaims{
+				"sub": "not-an-object-id",
+				"exp": time.Now().Add(time.Hour).Unix(),
+			})
+		}, http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+tt.token(t))
+			rec := httptest.NewRecorder()
+			protected.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body: %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+
+	// A token outlives its user: soft-deleting must lock them out at once.
+	token, err := IssueToken(u, testJWTSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if err := DeleteUser(ctx, s, u.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("soft-deleted user authenticated with an access token: %d", rec.Code)
+	}
+}
+
+// The role in a request comes from storage, not from the token: a token
+// minted before a demotion must not keep admin powers.
+func TestAccessTokenRoleComesFromStorage(t *testing.T) {
+	s, h := authTestEnv(t)
+	ctx := context.Background()
+
+	u, err := Register(ctx, s, nil, "admin@example.com", "secret123", permissions.RoleAdmin)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	token, err := IssueToken(u, testJWTSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	demoted := permissions.RoleUser
+	if _, err := UpdateUser(ctx, s, u.ID, UpdateUserParams{Role: &demoted}); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+
+	guarded := h.Auth(RequirePermission(permissions.UsersDelete)(echoUser(t)))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	guarded.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 — the admin claim in the token must not be trusted", rec.Code)
+	}
+}
+
 func TestAuthMiddleware(t *testing.T) {
 	s, h := authTestEnv(t)
 	ctx := context.Background()
@@ -183,6 +310,13 @@ func TestAuthMiddleware(t *testing.T) {
 		{"bearer wins over bad cookie", func(r *http.Request) {
 			r.Header.Set("Authorization", "Bearer "+sess.Token)
 			r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage"})
+		}, http.StatusOK},
+		{"valid access token", func(r *http.Request) {
+			token, err := IssueToken(u, testJWTSecret, time.Hour)
+			if err != nil {
+				t.Fatalf("IssueToken: %v", err)
+			}
+			r.Header.Set("Authorization", "Bearer "+token)
 		}, http.StatusOK},
 	}
 	for _, tt := range tests {

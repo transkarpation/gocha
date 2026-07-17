@@ -76,12 +76,17 @@ Both return the same payload:
 ```
 
 `access_token` is a JWT (HS256, `auth.jwt_secret`) with `sub`, `email`,
-`role`, `iat` and `exp` claims. `session_token` is what the API itself
-authenticates with (see below). The `xmpp_*` fields are the credentials of
-the user's mirrored chat account — connect to `ethora.xmpp_ws_url` with
-them; they are absent when the user has no mirror.
+`role`, `iat` and `exp` claims. Either it or `session_token` authenticates
+API requests. The `xmpp_*` fields are the credentials of the user's mirrored
+chat account — connect to `ethora.xmpp_ws_url` with them; they are absent
+when the user has no mirror.
 
-Authenticated (send `Authorization: Bearer <token>` or the `session` cookie):
+The two credentials differ in one way worth knowing: a session is revoked
+the moment the password changes, an access token keeps working until it
+expires.
+
+Authenticated (send `Authorization: Bearer <access_token or session_token>`
+or the `session` cookie):
 
 | Method | Path | Permission | Description |
 |---|---|---|---|

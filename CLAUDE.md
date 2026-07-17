@@ -144,15 +144,23 @@ no mirror — that must never break signing in). The JWT is signed HS256 with
 never reuse a third party's credential as our signing key. The secret has no
 default and `main` refuses to start without it (an empty HS256 key makes
 tokens forgeable). `users.IssueToken` in `token.go` is the only signer.
-The access token is issued but not yet accepted by `Auth` — that middleware
-still takes session tokens only.
-
 Sessions: opaque random tokens (not JWT) stored in the `sessions` collection.
 `Auth` middleware accepts `Authorization: Bearer <token>` (priority) or the
 `session` HttpOnly cookie, loads the user and stores it in the request context;
 handlers read it with `users.FromContext(ctx)`. Session expiry is enforced in
 the `SessionByToken` query (`expires_at > now`) — the Mongo TTL index cleans up
 lazily and must not be relied on for correctness.
+
+`Auth` takes either credential: `users.Handler.authenticate` treats a
+`x.y.z`-shaped token as a JWT (session tokens are hex, so the shape is
+unambiguous and no lookup is wasted) and verifies it with `users.ParseToken`;
+anything else goes through the session lookup. `ParseToken` pins HS256
+(`jwt.WithValidMethods` — otherwise `alg: none` would authenticate anyone)
+and requires `exp`. Only the `sub` claim is trusted: role and email always
+come from storage, so a token minted before a demotion or a soft delete
+carries no stale powers. The trade-off to remember: sessions die on password
+change, an access token stays valid until `exp` — it is stateless by design;
+add a token version on the user document if that ever needs to change.
 
 Collections and their invariants (created in `users.NewStorage`):
 `users` — unique index on `email`; `sessions` — TTL index on `expires_at`;
