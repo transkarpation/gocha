@@ -2,6 +2,9 @@
 /bin/
 *.exe
 
+# Taskfile checksum cache
+/.task/
+
 # Logs
 *.log
 

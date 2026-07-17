@@ -5,15 +5,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-# MongoDB must be running before the server or CLI will start
-docker compose up -d
+# Common workflows are wrapped in a Taskfile (https://taskfile.dev;
+# install: go install github.com/go-task/task/v3/cmd/task@latest)
+task up      # docker compose up -d — Mongo must run before server/CLI start
+task build   # build both binaries into bin/ (incremental via checksums
+             # in gitignored .task/; module requires Go >= 1.23)
+task run     # run the server (flags: -config <path>, default config.yaml)
+task test    # go test ./...
+task clean   # remove bin/
 
-# Build both binaries into bin/ (gitignored; module requires Go >= 1.23,
-# toolchain auto-downloads)
+# The raw commands behind the tasks also work directly:
 go build -o bin/gocha.exe .
 go build -o bin/gochactrl.exe ./cmd/gochactrl
-
-# Run the server (flags: -config <path>, default config.yaml)
 go run .
 
 # CLI: create a user / issue a session token

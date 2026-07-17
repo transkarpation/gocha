@@ -22,6 +22,18 @@ go run .
 
 The server listens on `:8080` by default.
 
+With [Task](https://taskfile.dev) installed
+(`go install github.com/go-task/task/v3/cmd/task@latest`) the common
+workflows are one word each:
+
+```sh
+task up      # start MongoDB
+task build   # build bin/gocha.exe and bin/gochactrl.exe (incremental)
+task run     # run the server
+task test    # run all tests
+task clean   # remove bin/
+```
+
 ## Configuration
 
 Priority: **env vars > `config.yaml` > built-in defaults**.
@@ -80,7 +92,7 @@ HTTP self-registration always creates a plain `user`. Admins are created with
 the CLI:
 
 ```sh
-go build -o bin/gochactrl.exe ./cmd/gochactrl
+go build -o bin/gochactrl.exe ./cmd/gochactrl   # or: task build
 
 ./bin/gochactrl.exe register --email admin@example.com --password secret123 --role admin
 ./bin/gochactrl.exe login --email admin@example.com --password secret123

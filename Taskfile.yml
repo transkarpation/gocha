@@ -1,0 +1,48 @@
+version: '3'
+
+tasks:
+  default:
+    deps: [build]
+
+  build:
+    desc: Build server and CLI into bin/
+    deps: [build:server, build:cli]
+
+  build:server:
+    desc: Build the HTTP server
+    sources: ['**/*.go', 'go.mod', 'go.sum']
+    generates: ['bin/gocha.exe']
+    cmds:
+      - go build -o bin/gocha.exe .
+
+  build:cli:
+    desc: Build the gochactrl admin CLI
+    sources: ['**/*.go', 'go.mod', 'go.sum']
+    generates: ['bin/gochactrl.exe']
+    cmds:
+      - go build -o bin/gochactrl.exe ./cmd/gochactrl
+
+  run:
+    desc: Run the server (needs Mongo — `task up` first)
+    cmds:
+      - go run .
+
+  test:
+    desc: Run all tests (users/chats are integration tests — they need the docker-compose Mongo and skip themselves without it)
+    cmds:
+      - go test ./...
+
+  up:
+    desc: Start MongoDB via docker compose
+    cmds:
+      - docker compose up -d
+
+  down:
+    desc: Stop MongoDB
+    cmds:
+      - docker compose down
+
+  clean:
+    desc: Remove built binaries
+    cmds:
+      - rm -rf bin
