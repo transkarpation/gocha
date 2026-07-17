@@ -14,10 +14,18 @@ import (
 	"github.com/transkarpation/gocha/internal/permissions"
 )
 
+// ChatAccount is what the chat backend hands back after mirroring: the
+// XMPP credentials our server can use to act as that user. A zero value
+// means the backend has none to report.
+type ChatAccount struct {
+	XMPPUsername string
+	XMPPPassword string
+}
+
 // ChatBackend replicates our accounts into an external chat platform
 // (e.g. Ethora, see internal/mirror). A nil ChatBackend disables mirroring.
 type ChatBackend interface {
-	MirrorUser(ctx context.Context, u User) error
+	MirrorUser(ctx context.Context, u User) (ChatAccount, error)
 	// DeleteUser removes the mirrored account; userID is our user id in hex.
 	DeleteUser(ctx context.Context, userID string) error
 	// DeleteUsers removes many mirrored accounts in one call.
@@ -98,9 +106,17 @@ func Register(ctx context.Context, s *Storage, chat ChatBackend, email, password
 	}
 
 	if chat != nil {
-		if err := chat.MirrorUser(ctx, u); err != nil {
+		acc, err := chat.MirrorUser(ctx, u)
+		switch {
+		case err != nil:
 			slog.WarnContext(ctx, "mirror user to chat backend",
 				"user_id", u.ID.Hex(), "error", err)
+		case acc != (ChatAccount{}):
+			// Same best-effort policy as the mirroring itself.
+			if err := s.SaveChatCredentials(ctx, u.ID, acc.XMPPUsername, acc.XMPPPassword); err != nil {
+				slog.WarnContext(ctx, "store chat credentials",
+					"user_id", u.ID.Hex(), "error", err)
+			}
 		}
 	}
 	return u, nil

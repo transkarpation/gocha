@@ -37,15 +37,29 @@ type Session struct {
 	ExpiresAt time.Time     `bson:"expires_at"`
 }
 
+// ChatCredentials are the XMPP credentials of a user's mirrored chat
+// account, captured from the chat backend at mirroring time. They live in
+// their own collection (keyed by user id) rather than on the User document:
+// they are backend-specific, exist only when mirroring succeeded, and must
+// not travel with User values through handlers and listings.
+type ChatCredentials struct {
+	UserID       bson.ObjectID `bson:"_id"`
+	XMPPUsername string        `bson:"xmpp_username"`
+	XMPPPassword string        `bson:"xmpp_password"`
+	UpdatedAt    time.Time     `bson:"updated_at"`
+}
+
 type Storage struct {
-	users    *mongo.Collection
-	sessions *mongo.Collection
+	users     *mongo.Collection
+	sessions  *mongo.Collection
+	chatCreds *mongo.Collection
 }
 
 func NewStorage(ctx context.Context, db *mongo.Database) (*Storage, error) {
 	s := &Storage{
-		users:    db.Collection("users"),
-		sessions: db.Collection("sessions"),
+		users:     db.Collection("users"),
+		sessions:  db.Collection("sessions"),
+		chatCreds: db.Collection("chat_credentials"),
 	}
 
 	_, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
@@ -226,8 +240,9 @@ func (s *Storage) RestoreUser(ctx context.Context, id bson.ObjectID) (User, erro
 	return u, nil
 }
 
-// DeleteUser permanently removes the user and all their sessions, so
-// outstanding tokens stop working immediately.
+// DeleteUser permanently removes the user, all their sessions (so
+// outstanding tokens stop working immediately) and their stored chat
+// credentials.
 func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
 	res, err := s.users.DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
 	if err != nil {
@@ -235,6 +250,9 @@ func (s *Storage) DeleteUser(ctx context.Context, id bson.ObjectID) error {
 	}
 	if res.DeletedCount == 0 {
 		return ErrNotFound
+	}
+	if err := s.DeleteChatCredentials(ctx, id); err != nil {
+		return err
 	}
 	return s.DeleteSessions(ctx, id)
 }
@@ -259,7 +277,8 @@ func (s *Storage) AllUserIDs(ctx context.Context) ([]bson.ObjectID, error) {
 	return ids, nil
 }
 
-// DeleteAllUsers removes every user and every session.
+// DeleteAllUsers removes every user, every session and all stored chat
+// credentials.
 func (s *Storage) DeleteAllUsers(ctx context.Context) (int64, error) {
 	res, err := s.users.DeleteMany(ctx, bson.D{})
 	if err != nil {
@@ -268,7 +287,45 @@ func (s *Storage) DeleteAllUsers(ctx context.Context) (int64, error) {
 	if _, err := s.sessions.DeleteMany(ctx, bson.D{}); err != nil {
 		return res.DeletedCount, err
 	}
+	if _, err := s.chatCreds.DeleteMany(ctx, bson.D{}); err != nil {
+		return res.DeletedCount, err
+	}
 	return res.DeletedCount, nil
+}
+
+// SaveChatCredentials stores (or replaces) the XMPP credentials of the
+// user's mirrored chat account.
+func (s *Storage) SaveChatCredentials(ctx context.Context, userID bson.ObjectID, xmppUsername, xmppPassword string) error {
+	_, err := s.chatCreds.ReplaceOne(ctx,
+		bson.D{{Key: "_id", Value: userID}},
+		ChatCredentials{
+			UserID:       userID,
+			XMPPUsername: xmppUsername,
+			XMPPPassword: xmppPassword,
+			UpdatedAt:    time.Now().UTC(),
+		},
+		options.Replace().SetUpsert(true),
+	)
+	return err
+}
+
+// ChatCredentialsByUserID returns the stored XMPP credentials of the user's
+// mirrored chat account.
+func (s *Storage) ChatCredentialsByUserID(ctx context.Context, userID bson.ObjectID) (ChatCredentials, error) {
+	var c ChatCredentials
+	err := s.chatCreds.FindOne(ctx, bson.D{{Key: "_id", Value: userID}}).Decode(&c)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return ChatCredentials{}, ErrNotFound
+	}
+	return c, err
+}
+
+// DeleteChatCredentials removes the stored XMPP credentials of the user.
+// Missing credentials are not an error — mirroring may have been disabled
+// or failed when the user was registered.
+func (s *Storage) DeleteChatCredentials(ctx context.Context, userID bson.ObjectID) error {
+	_, err := s.chatCreds.DeleteOne(ctx, bson.D{{Key: "_id", Value: userID}})
+	return err
 }
 
 // DeleteSessions invalidates all sessions of the user.

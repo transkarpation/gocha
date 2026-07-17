@@ -60,6 +60,12 @@ User mirroring: `users.Register` calls the `users.ChatBackend` interface when
 one is provided; `internal/mirror.Ethora` is the adapter (random names,
 one-off password, our user id as uuid). Mirroring is best-effort — a failure
 is logged, registration still succeeds; that policy lives in `users.Register`.
+`MirrorUser` returns a `users.ChatAccount` (the XMPP credentials Ethora
+generated); `Register` persists it in the `chat_credentials` collection
+(keyed by user id — deliberately NOT on the User document, so backend-specific
+secrets never travel with User values through handlers/listings). Credentials
+survive a soft delete, are removed on hard delete / delete-all, and are read
+back via `Storage.ChatCredentialsByUserID`.
 Credentials and base_url come from the `ethora` config section; without
 credentials mirroring is disabled (nil backend). Ethora's batch delete is
 all-or-nothing (404 when any id is unknown), so the adapter falls back to
@@ -124,6 +130,7 @@ lazily and must not be relied on for correctness.
 
 Collections and their invariants (created in `users.NewStorage`):
 `users` — unique index on `email`; `sessions` — TTL index on `expires_at`;
+`chat_credentials` — XMPP credentials of the mirrored account, `_id` = user id;
 `chats` — participants are validated against `users` at creation time and the
 creator from the session is always included.
 

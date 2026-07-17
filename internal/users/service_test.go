@@ -132,12 +132,15 @@ type fakeChat struct {
 	fail     bool
 }
 
-func (f *fakeChat) MirrorUser(_ context.Context, u User) error {
+func (f *fakeChat) MirrorUser(_ context.Context, u User) (ChatAccount, error) {
 	if f.fail {
-		return errors.New("chat backend down")
+		return ChatAccount{}, errors.New("chat backend down")
 	}
 	f.mirrored = append(f.mirrored, u)
-	return nil
+	return ChatAccount{
+		XMPPUsername: "xmpp-" + u.ID.Hex(),
+		XMPPPassword: "xmpp-pass-" + u.ID.Hex(),
+	}, nil
 }
 
 func (f *fakeChat) DeleteUser(_ context.Context, userID string) error {
@@ -169,10 +172,24 @@ func TestRegisterMirrorsToChatBackend(t *testing.T) {
 		t.Errorf("mirrored = %+v, want the registered user", chat.mirrored)
 	}
 
-	// A failing mirror must not fail the registration (best-effort policy).
+	// The XMPP credentials the backend reported must be stored.
+	creds, err := s.ChatCredentialsByUserID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("ChatCredentialsByUserID: %v", err)
+	}
+	if creds.XMPPUsername != "xmpp-"+u.ID.Hex() || creds.XMPPPassword != "xmpp-pass-"+u.ID.Hex() {
+		t.Errorf("stored credentials = %+v", creds)
+	}
+
+	// A failing mirror must not fail the registration (best-effort policy),
+	// and must leave no credentials behind.
 	failing := &fakeChat{fail: true}
-	if _, err := Register(ctx, s, failing, "bob@example.com", "secret123", permissions.RoleUser); err != nil {
+	bob, err := Register(ctx, s, failing, "bob@example.com", "secret123", permissions.RoleUser)
+	if err != nil {
 		t.Errorf("Register with failing mirror: %v, want success", err)
+	}
+	if _, err := s.ChatCredentialsByUserID(ctx, bob.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("credentials after failed mirror: %v, want ErrNotFound", err)
 	}
 
 	// A validation error must not reach the chat backend.
@@ -287,6 +304,9 @@ func TestDeleteUserIsSoft(t *testing.T) {
 	if len(chat.deleted) != 0 {
 		t.Errorf("soft delete reached the chat backend: %v", chat.deleted)
 	}
+	if _, err := s.ChatCredentialsByUserID(ctx, u.ID); err != nil {
+		t.Errorf("chat credentials must survive a soft delete: %v", err)
+	}
 
 	// Second soft delete reports not found.
 	if err := DeleteUser(ctx, s, u.ID); !errors.Is(err, ErrNotFound) {
@@ -366,6 +386,9 @@ func TestHardDeleteUser(t *testing.T) {
 	}
 	if len(chat.deleted) != 1 || chat.deleted[0] != u.ID.Hex() {
 		t.Errorf("chat deleted = %v, want [%s]", chat.deleted, u.ID.Hex())
+	}
+	if _, err := s.ChatCredentialsByUserID(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("chat credentials survived hard delete: %v", err)
 	}
 
 	// Hard delete also purges a soft-deleted user.

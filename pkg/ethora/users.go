@@ -22,6 +22,7 @@ type User struct {
 	AppID        string `json:"appId"`
 	FirstName    string `json:"firstName"`
 	LastName     string `json:"lastName"`
+	XMPPUsername string `json:"xmppUsername"`
 	XMPPPassword string `json:"xmppPassword"`
 }
 

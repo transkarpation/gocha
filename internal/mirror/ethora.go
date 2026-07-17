@@ -25,23 +25,29 @@ func NewEthora(client *ethora.Client) *Ethora {
 // MirrorUser creates the user in Ethora: our email and user id, random
 // names and a one-off password (never stored — the server talks to Ethora
 // with its app JWT, not with user credentials). Email confirmation is
-// bypassed so mirrored users don't receive Ethora emails.
-func (e *Ethora) MirrorUser(ctx context.Context, u users.User) error {
+// bypassed so mirrored users don't receive Ethora emails. The returned
+// ChatAccount carries the XMPP credentials Ethora generated for the user.
+func (e *Ethora) MirrorUser(ctx context.Context, u users.User) (users.ChatAccount, error) {
 	bu, err := ethora.RandomBatchUser(u.Email, u.ID.Hex())
 	if err != nil {
-		return err
+		return users.ChatAccount{}, err
 	}
 	created, err := e.client.CreateUsersBatch(ctx, []ethora.BatchUser{bu}, true)
 	if err != nil {
-		return fmt.Errorf("create ethora user: %w", err)
+		return users.ChatAccount{}, fmt.Errorf("create ethora user: %w", err)
 	}
+	var acc users.ChatAccount
 	ethoraID := ""
 	if len(created) > 0 {
 		ethoraID = created[0].ID
+		acc = users.ChatAccount{
+			XMPPUsername: created[0].XMPPUsername,
+			XMPPPassword: created[0].XMPPPassword,
+		}
 	}
 	slog.InfoContext(ctx, "user created on ethora",
 		"user_id", u.ID.Hex(), "email", u.Email, "ethora_id", ethoraID)
-	return nil
+	return acc, nil
 }
 
 // DeleteUser removes the mirrored Ethora account by our user id
