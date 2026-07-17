@@ -1,0 +1,167 @@
+# gocha API — requests for the VS Code REST Client extension
+# (humao.rest-client). Click "Send Request" above any ### block.
+# JetBrains IDEs run this file too, but their client does not do the
+# {{login.response...}} capture — paste the token into @token there.
+#
+# Start here: run "Log in as admin" (or "Register"), and every request
+# below picks the token up automatically.
+
+@host = http://localhost:8080
+
+# Dev accounts created with:
+#   gochactrl register --email admin@example.com --password admin12345 --role admin
+#   gochactrl register --email cli-user@example.com --password secret123
+@adminEmail = admin@example.com
+@adminPassword = admin12345
+@userEmail = cli-user@example.com
+@userPassword = secret123
+
+
+### Healthcheck — no auth
+GET {{host}}/healthcheck
+
+
+### Register a new account (always role "user"; 409 if the email is taken)
+# @name register
+POST {{host}}/register
+Content-Type: application/json
+
+{
+  "email": "new-user@example.com",
+  "password": "secret123"
+}
+
+### Log in as admin — most requests below need this one
+# @name login
+POST {{host}}/login
+Content-Type: application/json
+
+{
+  "email": "{{adminEmail}}",
+  "password": "{{adminPassword}}"
+}
+
+### Log in as a plain user — the non-admin in the 403 checks below
+# @name loginUser
+POST {{host}}/login
+Content-Type: application/json
+
+{
+  "email": "{{userEmail}}",
+  "password": "{{userPassword}}"
+}
+
+### Log in as the account registered above — the outsider in the group chat
+# @name loginOutsider
+POST {{host}}/login
+Content-Type: application/json
+
+{
+  "email": "new-user@example.com",
+  "password": "secret123"
+}
+
+
+# The access token is the only credential the API takes. It is also set as
+# an HttpOnly access_token cookie, so a browser needs no header at all.
+@token = {{login.response.body.$.access_token}}
+@userToken = {{loginUser.response.body.$.access_token}}
+@userId = {{loginUser.response.body.$.id}}
+@outsiderToken = {{loginOutsider.response.body.$.access_token}}
+
+
+### Who am I
+GET {{host}}/me
+Authorization: Bearer {{token}}
+
+### No token → 401
+GET {{host}}/me
+
+### Cookie instead of the header (what a browser does)
+GET {{host}}/me
+Cookie: access_token={{token}}
+
+
+## Users (admin only)
+
+### List users, oldest first
+GET {{host}}/users?limit=20&offset=0
+Authorization: Bearer {{token}}
+
+### List as a plain user → 403 (missing users:read)
+GET {{host}}/users
+Authorization: Bearer {{userToken}}
+
+### Update a user — any subset of email/role/password
+# Changing the password revokes every token issued to that user so far.
+PATCH {{host}}/users/{{userId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "role": "user"
+}
+
+### Soft-delete a user (deleted_at; the Ethora mirror is kept)
+DELETE {{host}}/users/{{userId}}
+Authorization: Bearer {{token}}
+
+### Restore a soft-deleted user (409 if they are not deleted)
+POST {{host}}/users/{{userId}}/restore
+Authorization: Bearer {{token}}
+
+
+## Chats
+
+### Create a public chat — open to any authenticated user
+# @name publicChat
+POST {{host}}/chats
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Town square",
+  "type": "public"
+}
+
+### Create a group chat — readable only by its participants
+# Needs at least 2 of them; the creator is always added, so listing
+# yourself is optional. Here that is the admin plus {{userId}}.
+# @name groupChat
+POST {{host}}/chats
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Standup",
+  "type": "group",
+  "participants": ["{{userId}}"]
+}
+
+@publicChatId = {{publicChat.response.body.$.id}}
+@groupChatId = {{groupChat.response.body.$.id}}
+
+### Send a message (text: 1-2000 chars)
+POST {{host}}/chats/{{publicChatId}}/messages
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "text": "Hello from api.rest"
+}
+
+### List messages, newest first (limit 1-100, default 50)
+GET {{host}}/chats/{{publicChatId}}/messages?limit=50&offset=0
+Authorization: Bearer {{token}}
+
+### A participant reads the group chat → 200
+GET {{host}}/chats/{{groupChatId}}/messages
+Authorization: Bearer {{userToken}}
+
+### Someone outside the group reads it → 403
+GET {{host}}/chats/{{groupChatId}}/messages
+Authorization: Bearer {{outsiderToken}}
+
+### Delete a chat (admin only)
+DELETE {{host}}/chats/{{publicChatId}}
+Authorization: Bearer {{token}}
