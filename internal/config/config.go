@@ -2,11 +2,27 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// splitAndTrim splits a comma-separated list, dropping blank entries and
+// surrounding whitespace (used for CORS_ALLOWED_ORIGINS).
+func splitAndTrim(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 type Config struct {
 	Server ServerConfig `yaml:"server"`
@@ -17,6 +33,10 @@ type Config struct {
 
 type ServerConfig struct {
 	Port int `yaml:"port"`
+	// AllowedOrigins are the browser origins CORS lets call the API directly
+	// (so the SPA needs no dev proxy). A single "*" entry allows any origin
+	// (without credentials); an empty list disables CORS.
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 // AuthConfig holds our own signing material. JWTSecret deliberately has no
@@ -40,7 +60,11 @@ type EthoraConfig struct {
 
 func defaults() Config {
 	return Config{
-		Server: ServerConfig{Port: 8080},
+		Server: ServerConfig{
+			Port: 8080,
+			// Vite dev server defaults; override for other hosts.
+			AllowedOrigins: []string{"http://localhost:5173", "http://127.0.0.1:5173"},
+		},
 		Mongo: MongoConfig{
 			URI:      "mongodb://root:example@localhost:27017",
 			Database: "protected_server",
@@ -54,7 +78,8 @@ func defaults() Config {
 
 // Load reads the config file and applies env overrides
 // (APP_PORT, MONGO_URI, MONGO_DB, ETHORA_BASE_URL, ETHORA_API_KEY,
-// ETHORA_API_SECRET, ETHORA_XMPP_WS_URL, JWT_SECRET) on top of it.
+// ETHORA_API_SECRET, ETHORA_XMPP_WS_URL, JWT_SECRET,
+// CORS_ALLOWED_ORIGINS) on top of it.
 // A missing file is not an error — defaults are used instead.
 func Load(path string) (Config, error) {
 	cfg := defaults()
@@ -62,7 +87,17 @@ func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
-		// keep defaults
+		// Keep defaults — a missing config file is legitimate. Say so
+		// with the absolute path though: `path` is relative to the
+		// working directory, so running the binary from bin/ silently
+		// looks for bin/config.yaml and falls back to defaults that have
+		// no jwt_secret. Without this line the only symptom is a
+		// confusing "auth.jwt_secret is not configured" at startup.
+		abs, absErr := filepath.Abs(path)
+		if absErr != nil {
+			abs = path
+		}
+		slog.Warn("config file not found, using defaults", "path", abs)
 	case err != nil:
 		return Config{}, fmt.Errorf("read config %s: %w", path, err)
 	default:
@@ -98,6 +133,9 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("JWT_SECRET"); v != "" {
 		cfg.Auth.JWTSecret = v
+	}
+	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {
+		cfg.Server.AllowedOrigins = splitAndTrim(v)
 	}
 
 	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
