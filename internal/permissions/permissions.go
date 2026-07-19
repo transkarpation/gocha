@@ -14,6 +14,14 @@ func ValidRole(r Role) bool {
 	return r == RoleAdmin || r == RoleUser
 }
 
+// Roles returns every registered role. Callers that need to enumerate them
+// (the API's `oneof` validation tag, docs, tests) read them from here
+// rather than repeating the list, so adding a role has one obvious place
+// to start and the copies that missed it fail loudly.
+func Roles() []Role {
+	return []Role{RoleAdmin, RoleUser}
+}
+
 type Permission string
 
 // Chats.

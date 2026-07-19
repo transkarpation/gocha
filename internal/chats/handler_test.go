@@ -105,7 +105,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	env := &testEnv{router: r, storage: cstorage}
 	register := func(email string, role permissions.Role) (bson.ObjectID, string) {
-		u, err := users.Register(ctx, ustorage, nil, email, "secret123", role)
+		u, err := users.Register(ctx, ustorage, nil, users.RegisterParams{Email: email, Password: "secret123", Role: role})
 		if err != nil {
 			t.Fatalf("register %s: %v", email, err)
 		}

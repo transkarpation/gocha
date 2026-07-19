@@ -3,6 +3,7 @@ package users
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,11 +25,70 @@ func newTestStorage(t *testing.T) *Storage {
 	return s
 }
 
+// The display name is optional and free-form, so the things worth pinning
+// down are that it survives a round trip through storage, that it is
+// trimmed, and that an update can clear it again.
+func TestRegisterDisplayName(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	u, err := Register(ctx, s, nil, RegisterParams{
+		Email:       "alice@example.com",
+		Password:    "secret123",
+		Role:        permissions.RoleUser,
+		DisplayName: "  Alice Liddell  ",
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if u.DisplayName != "Alice Liddell" {
+		t.Errorf("display name = %q, want %q (trimmed)", u.DisplayName, "Alice Liddell")
+	}
+
+	stored, err := s.UserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("UserByID: %v", err)
+	}
+	if stored.DisplayName != "Alice Liddell" {
+		t.Errorf("stored display name = %q, want %q", stored.DisplayName, "Alice Liddell")
+	}
+
+	// Registering without one is legitimate — the CLI does it.
+	bob, err := Register(ctx, s, nil, RegisterParams{
+		Email: "bob@example.com", Password: "secret123", Role: permissions.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("Register without display name: %v", err)
+	}
+	if bob.DisplayName != "" {
+		t.Errorf("display name = %q, want empty", bob.DisplayName)
+	}
+
+	shortName := "Alice"
+	renamed, err := UpdateUser(ctx, s, u.ID, UpdateUserParams{DisplayName: &shortName})
+	if err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	if renamed.DisplayName != "Alice" {
+		t.Errorf("display name after update = %q, want %q", renamed.DisplayName, "Alice")
+	}
+
+	// An explicit empty string clears the name rather than being ignored.
+	emptyName := ""
+	cleared, err := UpdateUser(ctx, s, u.ID, UpdateUserParams{DisplayName: &emptyName})
+	if err != nil {
+		t.Fatalf("UpdateUser clearing display name: %v", err)
+	}
+	if cleared.DisplayName != "" {
+		t.Errorf("display name after clearing = %q, want empty", cleared.DisplayName)
+	}
+}
+
 func TestRegister(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, nil, RegisterParams{Email: "alice@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -43,20 +103,31 @@ func TestRegister(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		email    string
-		password string
-		role     permissions.Role
-		wantErr  error
+		name        string
+		email       string
+		password    string
+		role        permissions.Role
+		displayName string
+		wantErr     error
 	}{
-		{"duplicate email", "alice@example.com", "secret123", permissions.RoleUser, ErrEmailTaken},
-		{"invalid email", "not-an-email", "secret123", permissions.RoleUser, ErrInvalidEmail},
-		{"short password", "bob@example.com", "1234567", permissions.RoleUser, ErrPasswordTooShort},
-		{"invalid role", "bob@example.com", "secret123", "superuser", ErrInvalidRole},
+		{"duplicate email", "alice@example.com", "secret123", permissions.RoleUser, "", ErrEmailTaken},
+		{"invalid email", "not-an-email", "secret123", permissions.RoleUser, "", ErrInvalidEmail},
+		{"short password", "bob@example.com", "1234567", permissions.RoleUser, "", ErrPasswordTooShort},
+		{"invalid role", "bob@example.com", "secret123", "superuser", "", ErrInvalidRole},
+		{
+			"display name too long", "bob@example.com", "secret123", permissions.RoleUser,
+			strings.Repeat("a", maxDisplayNameLen+1), ErrDisplayNameTooLong,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Register(ctx, s, nil, tt.email, tt.password, tt.role); !errors.Is(err, tt.wantErr) {
+			_, err := Register(ctx, s, nil, RegisterParams{
+				Email:       tt.email,
+				Password:    tt.password,
+				Role:        tt.role,
+				DisplayName: tt.displayName,
+			})
+			if !errors.Is(err, tt.wantErr) {
 				t.Errorf("Register() error = %v, want %v", err, tt.wantErr)
 			}
 		})
@@ -67,7 +138,7 @@ func TestLogin(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	created, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
+	created, err := Register(ctx, s, nil, RegisterParams{Email: "alice@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -93,7 +164,7 @@ func TestAccessTokens(t *testing.T) {
 	ctx := context.Background()
 	secret := []byte("service-test-secret")
 
-	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, nil, RegisterParams{Email: "alice@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -175,7 +246,7 @@ func TestRegisterMirrorsToChatBackend(t *testing.T) {
 	ctx := context.Background()
 
 	chat := &fakeChat{}
-	u, err := Register(ctx, s, chat, "alice@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, chat, RegisterParams{Email: "alice@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -195,7 +266,7 @@ func TestRegisterMirrorsToChatBackend(t *testing.T) {
 	// A failing mirror must not fail the registration (best-effort policy),
 	// and must leave no credentials behind.
 	failing := &fakeChat{fail: true}
-	bob, err := Register(ctx, s, failing, "bob@example.com", "secret123", permissions.RoleUser)
+	bob, err := Register(ctx, s, failing, RegisterParams{Email: "bob@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Errorf("Register with failing mirror: %v, want success", err)
 	}
@@ -205,7 +276,7 @@ func TestRegisterMirrorsToChatBackend(t *testing.T) {
 
 	// A validation error must not reach the chat backend.
 	before := len(chat.mirrored)
-	if _, err := Register(ctx, s, chat, "alice@example.com", "secret123", permissions.RoleUser); !errors.Is(err, ErrEmailTaken) {
+	if _, err := Register(ctx, s, chat, RegisterParams{Email: "alice@example.com", Password: "secret123", Role: permissions.RoleUser}); !errors.Is(err, ErrEmailTaken) {
 		t.Fatalf("duplicate register: %v, want ErrEmailTaken", err)
 	}
 	if len(chat.mirrored) != before {
@@ -271,7 +342,7 @@ func TestPasswordChangeRevokesTokens(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	u, err := Register(ctx, s, nil, "alice@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, nil, RegisterParams{Email: "alice@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -313,7 +384,7 @@ func TestDeleteUserIsSoft(t *testing.T) {
 	ctx := context.Background()
 	chat := &fakeChat{}
 
-	u, err := Register(ctx, s, chat, "doomed@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, chat, RegisterParams{Email: "doomed@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -346,7 +417,7 @@ func TestDeleteUserIsSoft(t *testing.T) {
 	if got.DeletedAt == nil {
 		t.Error("deleted_at not set on soft-deleted user")
 	}
-	if _, err := Register(ctx, s, nil, "doomed@example.com", "secret123", permissions.RoleUser); !errors.Is(err, ErrEmailTaken) {
+	if _, err := Register(ctx, s, nil, RegisterParams{Email: "doomed@example.com", Password: "secret123", Role: permissions.RoleUser}); !errors.Is(err, ErrEmailTaken) {
 		t.Errorf("re-register soft-deleted email: %v, want ErrEmailTaken", err)
 	}
 	if len(chat.deleted) != 0 {
@@ -366,7 +437,7 @@ func TestRestoreUser(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	u, err := Register(ctx, s, nil, "phoenix@example.com", "secret123", permissions.RoleAdmin)
+	u, err := Register(ctx, s, nil, RegisterParams{Email: "phoenix@example.com", Password: "secret123", Role: permissions.RoleAdmin})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -413,7 +484,7 @@ func TestHardDeleteUser(t *testing.T) {
 	ctx := context.Background()
 	chat := &fakeChat{}
 
-	u, err := Register(ctx, s, chat, "doomed@example.com", "secret123", permissions.RoleUser)
+	u, err := Register(ctx, s, chat, RegisterParams{Email: "doomed@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -433,7 +504,7 @@ func TestHardDeleteUser(t *testing.T) {
 	}
 
 	// Hard delete also purges a soft-deleted user.
-	u2, err := Register(ctx, s, nil, "doomed2@example.com", "secret123", permissions.RoleUser)
+	u2, err := Register(ctx, s, nil, RegisterParams{Email: "doomed2@example.com", Password: "secret123", Role: permissions.RoleUser})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -465,7 +536,7 @@ func TestDeleteAllUsers(t *testing.T) {
 
 	var ids []string
 	for _, email := range []string{"a@example.com", "b@example.com", "c@example.com"} {
-		u, err := Register(ctx, s, nil, email, "secret123", permissions.RoleUser)
+		u, err := Register(ctx, s, nil, RegisterParams{Email: email, Password: "secret123", Role: permissions.RoleUser})
 		if err != nil {
 			t.Fatalf("Register %s: %v", email, err)
 		}
@@ -496,7 +567,7 @@ func TestDeleteAllUsers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnsureSystemUser: %v", err)
 		}
-		if _, err := Register(ctx, s, chat, "mortal@example.com", "secret123", permissions.RoleUser); err != nil {
+		if _, err := Register(ctx, s, chat, RegisterParams{Email: "mortal@example.com", Password: "secret123", Role: permissions.RoleUser}); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 

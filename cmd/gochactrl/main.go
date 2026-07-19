@@ -60,7 +60,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `Usage: gochactrl <command> [flags]
 
 Commands:
-  register    create a new user (--role admin|user, default user)
+  register    create a new user (--role admin|user, default user;
+              --display-name optional)
   login       verify credentials and issue an access token
   delete      soft-delete a user by --id or --email (no permission checks);
               --hard removes permanently including the Ethora mirror
@@ -137,6 +138,7 @@ func runRegister(args []string) error {
 	email := fs.String("email", "", "user email (required)")
 	password := fs.String("password", "", "user password (required)")
 	role := fs.String("role", string(permissions.RoleUser), `role: "admin" or "user"`)
+	displayName := fs.String("display-name", "", "human-readable name (optional)")
 	configPath := fs.String("config", "config.yaml", "path to config file")
 	fs.Parse(args)
 
@@ -154,12 +156,18 @@ func runRegister(args []string) error {
 	}
 	defer cleanup()
 
-	u, err := users.Register(ctx, storage, chat, *email, *password, permissions.Role(*role))
+	u, err := users.Register(ctx, storage, chat, users.RegisterParams{
+		Email:       *email,
+		Password:    *password,
+		Role:        permissions.Role(*role),
+		DisplayName: *displayName,
+	})
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("user created: id=%s email=%s role=%s\n", u.ID.Hex(), u.Email, u.Role)
+	fmt.Printf("user created: id=%s email=%s role=%s display_name=%s\n",
+		u.ID.Hex(), u.Email, u.Role, u.DisplayName)
 	return nil
 }
 
@@ -378,7 +386,9 @@ func runList(args []string) error {
 		return err
 	}
 	for _, u := range list {
-		fmt.Printf("%s\t%s\t%s\t%s\n", u.ID.Hex(), u.Role, u.CreatedAt.Format(time.RFC3339), u.Email)
+		// New columns go at the end: scripts parse this by field index.
+		fmt.Printf("%s\t%s\t%s\t%s\t%s\n",
+			u.ID.Hex(), u.Role, u.CreatedAt.Format(time.RFC3339), u.Email, u.DisplayName)
 	}
 	return nil
 }

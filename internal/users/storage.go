@@ -26,6 +26,12 @@ type User struct {
 	CreatedAt    time.Time        `bson:"created_at"`
 	DeletedAt    *time.Time       `bson:"deleted_at,omitempty"`
 
+	// DisplayName is the human-readable name shown instead of the email.
+	// Optional: the CLI, the system account and every user registered
+	// before this field existed have none, and handlers must cope with
+	// the empty string rather than assume it is set.
+	DisplayName string `bson:"display_name,omitempty"`
+
 	// TokenVersion revokes stateless access tokens: every token carries
 	// the version it was issued under and Auth rejects any mismatch.
 	// Bumped on password change. Zero for users who never changed it —
@@ -71,12 +77,13 @@ func NewStorage(ctx context.Context, db *mongo.Database) (*Storage, error) {
 	return s, nil
 }
 
-func (s *Storage) CreateUser(ctx context.Context, email, passwordHash string, role permissions.Role) (User, error) {
+func (s *Storage) CreateUser(ctx context.Context, email, passwordHash string, role permissions.Role, displayName string) (User, error) {
 	u := User{
 		Email:        email,
 		PasswordHash: passwordHash,
 		Role:         role,
 		CreatedAt:    time.Now().UTC(),
+		DisplayName:  displayName,
 	}
 	res, err := s.users.InsertOne(ctx, u)
 	if mongo.IsDuplicateKeyError(err) {
@@ -147,6 +154,7 @@ type UserUpdate struct {
 	Email        *string
 	PasswordHash *string
 	Role         *permissions.Role
+	DisplayName  *string
 }
 
 // UpdateUser applies the partial update and returns the updated user.
@@ -162,6 +170,9 @@ func (s *Storage) UpdateUser(ctx context.Context, id bson.ObjectID, upd UserUpda
 	}
 	if upd.Role != nil {
 		set = append(set, bson.E{Key: "role", Value: *upd.Role})
+	}
+	if upd.DisplayName != nil {
+		set = append(set, bson.E{Key: "display_name", Value: *upd.DisplayName})
 	}
 
 	update := bson.D{{Key: "$set", Value: set}}

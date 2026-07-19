@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/transkarpation/gocha/internal/users"
+	"github.com/transkarpation/gocha/internal/validate"
 )
 
 const (
@@ -32,9 +33,14 @@ func NewHandler(storage *Storage, userStorage *users.Storage) *Handler {
 	return &Handler{storage: storage, users: userStorage}
 }
 
+// createRequest is validated after Name is trimmed: `required` rejects the
+// empty string, but "   " would sail through it untrimmed.
+// Participants are deliberately untagged — parseParticipants already
+// resolves and reports them, and two sources of truth for the same field
+// would drift.
 type createRequest struct {
-	Name         string   `json:"name"`
-	Type         string   `json:"type"`
+	Name         string   `json:"name" validate:"required,max=100"`
+	Type         string   `json:"type" validate:"required,oneof=public group"`
 	Participants []string `json:"participants"`
 }
 
@@ -52,12 +58,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Name = strings.TrimSpace(req.Name)
-	if req.Name == "" || len(req.Name) > maxNameLen {
-		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("name must be 1-%d characters", maxNameLen))
-		return
-	}
-	if req.Type != TypePublic && req.Type != TypeGroup {
-		writeError(w, http.StatusUnprocessableEntity, `type must be "public" or "group"`)
+	if validate.WriteError(w, validate.Struct(req)) {
 		return
 	}
 
@@ -128,8 +129,10 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sendMessageRequest is validated after Text is trimmed, same as
+// createRequest.
 type sendMessageRequest struct {
-	Text string `json:"text"`
+	Text string `json:"text" validate:"required,max=2000"`
 }
 
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
@@ -144,8 +147,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" || len(req.Text) > maxMessageLen {
-		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("text must be 1-%d characters", maxMessageLen))
+	if validate.WriteError(w, validate.Struct(req)) {
 		return
 	}
 

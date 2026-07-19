@@ -79,3 +79,31 @@ func TestDeleteUsersRealFailureIsReported(t *testing.T) {
 		t.Error("expected error when every delete fails with 500")
 	}
 }
+
+// Ethora requires both firstName and lastName, so the mapping from our
+// single free-form display name onto that pair is what needs pinning down —
+// especially the single-word and empty cases.
+func TestSplitDisplayName(t *testing.T) {
+	tests := []struct {
+		name      string
+		in        string
+		wantFirst string
+		wantLast  string
+	}{
+		{"two words", "Alice Liddell", "Alice", "Liddell"},
+		{"single word repeats", "Alice", "Alice", "Alice"},
+		{"three words keep the tail together", "Ada King Lovelace", "Ada", "King Lovelace"},
+		{"extra whitespace", "  Alice   Liddell  ", "Alice", "Liddell"},
+		{"empty", "", "", ""},
+		{"whitespace only", "   ", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first, last := splitDisplayName(tt.in)
+			if first != tt.wantFirst || last != tt.wantLast {
+				t.Errorf("splitDisplayName(%q) = (%q, %q), want (%q, %q)",
+					tt.in, first, last, tt.wantFirst, tt.wantLast)
+			}
+		})
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/transkarpation/gocha/internal/permissions"
+	"github.com/transkarpation/gocha/internal/validate"
 )
 
 const (
@@ -21,6 +22,7 @@ const (
 
 	accessTokenCookieName = "access_token"
 	minPasswordLen        = 8
+	maxDisplayNameLen     = 64
 
 	defaultUsersLimit = 50
 	maxUsersLimit     = 100
@@ -36,23 +38,47 @@ func NewHandler(storage *Storage, chat ChatBackend, jwtSecret []byte) *Handler {
 	return &Handler{storage: storage, chat: chat, jwtSecret: jwtSecret}
 }
 
-type credentialsRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+// registerRequest carries the sign-up payload. display_name is optional —
+// omitting it keeps the account nameless, which is what the CLI and
+// pre-existing API clients do.
+//
+// The tag limits must stay in step with the service-layer constants they
+// mirror; TestTagsMatchServiceLimits fails if they drift apart.
+type registerRequest struct {
+	Email       string `json:"email" validate:"required,email"`
+	Password    string `json:"password" validate:"required,min=8"`
+	DisplayName string `json:"display_name" validate:"omitempty,max=64"`
+}
+
+// loginRequest deliberately does NOT constrain the password beyond being
+// present: a wrong password must come back as 401 from the credential
+// check, never as a 422 that reveals the password policy.
+type loginRequest struct {
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required"`
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
-	var req credentialsRequest
+	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if validate.WriteError(w, validate.Struct(req)) {
 		return
 	}
 
 	// HTTP self-registration always creates a plain user;
 	// admins are created via gochactrl.
-	u, err := Register(r.Context(), h.storage, h.chat, req.Email, req.Password, permissions.RoleUser)
+	u, err := Register(r.Context(), h.storage, h.chat, RegisterParams{
+		Email:       req.Email,
+		Password:    req.Password,
+		Role:        permissions.RoleUser,
+		DisplayName: req.DisplayName,
+	})
 	switch {
-	case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrPasswordTooShort):
+	case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrPasswordTooShort),
+		errors.Is(err, ErrDisplayNameTooLong):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	case errors.Is(err, ErrEmailTaken):
@@ -68,9 +94,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	var req credentialsRequest
+	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if validate.WriteError(w, validate.Struct(req)) {
 		return
 	}
 
@@ -88,10 +117,30 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.respondWithToken(w, r, u, http.StatusOK)
 }
 
+// userResponse is the public JSON shape of a user — the one place that
+// decides which fields leave the handler (password hashes never do).
+// display_name is always present, empty for accounts that have none, so
+// clients can rely on the key existing.
+func userResponse(u User) map[string]any {
+	return map[string]any{
+		"id":           u.ID.Hex(),
+		"email":        u.Email,
+		"display_name": u.DisplayName,
+		"role":         u.Role,
+		"created_at":   u.CreatedAt,
+	}
+}
+
+// updateUserRequest is a partial update: every field is a pointer, and a
+// nil one is absent rather than empty. `omitempty` makes each rule apply
+// only when the field was actually sent — except display_name, where an
+// explicit "" is a meaningful value (it clears the name), so only its
+// length is constrained.
 type updateUserRequest struct {
-	Email    *string           `json:"email"`
-	Password *string           `json:"password"`
-	Role     *permissions.Role `json:"role"`
+	Email       *string           `json:"email" validate:"omitempty,email"`
+	Password    *string           `json:"password" validate:"omitempty,min=8"`
+	Role        *permissions.Role `json:"role" validate:"omitempty,oneof=admin user"`
+	DisplayName *string           `json:"display_name" validate:"omitempty,max=64"`
 }
 
 // Update partially updates a user (admin permission is enforced by the
@@ -108,15 +157,20 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if validate.WriteError(w, validate.Struct(req)) {
+		return
+	}
 
 	u, err := UpdateUser(r.Context(), h.storage, id, UpdateUserParams{
-		Email:    req.Email,
-		Password: req.Password,
-		Role:     req.Role,
+		Email:       req.Email,
+		Password:    req.Password,
+		Role:        req.Role,
+		DisplayName: req.DisplayName,
 	})
 	switch {
 	case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrPasswordTooShort),
-		errors.Is(err, ErrInvalidRole), errors.Is(err, ErrNothingToUpdate):
+		errors.Is(err, ErrInvalidRole), errors.Is(err, ErrNothingToUpdate),
+		errors.Is(err, ErrDisplayNameTooLong):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	case errors.Is(err, ErrEmailTaken):
@@ -132,12 +186,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"id":         u.ID.Hex(),
-		"email":      u.Email,
-		"role":       u.Role,
-		"created_at": u.CreatedAt,
-	})
+	json.NewEncoder(w).Encode(userResponse(u))
 }
 
 // Delete soft-deletes a user (admin permission is enforced by the route).
@@ -191,12 +240,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]map[string]any, len(list))
 	for i, u := range list {
-		out[i] = map[string]any{
-			"id":         u.ID.Hex(),
-			"email":      u.Email,
-			"role":       u.Role,
-			"created_at": u.CreatedAt,
-		}
+		out[i] = userResponse(u)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"users": out})
@@ -226,12 +270,7 @@ func (h *Handler) Restore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"id":         u.ID.Hex(),
-		"email":      u.Email,
-		"role":       u.Role,
-		"created_at": u.CreatedAt,
-	})
+	json.NewEncoder(w).Encode(userResponse(u))
 }
 
 // Me returns the user resolved by the Auth middleware.
@@ -242,11 +281,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"id":    u.ID.Hex(),
-		"email": u.Email,
-		"role":  u.Role,
-	})
+	json.NewEncoder(w).Encode(userResponse(u))
 }
 
 // respondWithToken signs an access token for the user, sets the cookie
@@ -279,6 +314,7 @@ func (h *Handler) respondWithToken(w http.ResponseWriter, r *http.Request, u Use
 	body := map[string]any{
 		"id":           u.ID.Hex(),
 		"email":        u.Email,
+		"display_name": u.DisplayName,
 		"access_token": token,
 		"expires_at":   expiresAt,
 	}

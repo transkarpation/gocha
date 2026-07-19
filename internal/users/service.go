@@ -5,8 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/mail"
+	"strings"
+	"unicode/utf8"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"golang.org/x/crypto/bcrypt"
@@ -36,6 +39,7 @@ var (
 	ErrInvalidEmail       = errors.New("invalid email")
 	ErrPasswordTooShort   = errors.New("password must be at least 8 characters")
 	ErrInvalidRole        = errors.New(`role must be "admin" or "user"`)
+	ErrDisplayNameTooLong = fmt.Errorf("display name must be at most %d characters", maxDisplayNameLen)
 	ErrInvalidCredentials = errors.New("invalid email or password")
 	ErrNothingToUpdate    = errors.New("nothing to update")
 	ErrSystemExists       = errors.New("system account already exists")
@@ -45,6 +49,9 @@ var (
 // sent on its behalf. The account is created at server startup with a
 // random throwaway password, so nobody can log in as it.
 const SystemEmail = "system@gocha.internal"
+
+// SystemDisplayName is what clients render for service messages.
+const SystemDisplayName = "System"
 
 // EnsureSystemUser makes sure the system account exists and is alive:
 // missing — registered (and mirrored like any user), soft-deleted —
@@ -92,12 +99,28 @@ func createSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, 
 	if err != nil {
 		return User{}, err
 	}
-	u, err := Register(ctx, s, chat, SystemEmail, password, permissions.RoleUser)
+	u, err := Register(ctx, s, chat, RegisterParams{
+		Email:       SystemEmail,
+		Password:    password,
+		Role:        permissions.RoleUser,
+		DisplayName: SystemDisplayName,
+	})
 	if err != nil {
 		return User{}, err
 	}
 	slog.InfoContext(ctx, "system user created", "user_id", u.ID.Hex(), "email", u.Email)
 	return u, nil
+}
+
+// RegisterParams are the inputs of Register. DisplayName is optional —
+// the CLI and the system account leave it empty — everything else is
+// required. A struct rather than positional arguments so a caller cannot
+// silently swap two strings.
+type RegisterParams struct {
+	Email       string
+	Password    string
+	Role        permissions.Role
+	DisplayName string
 }
 
 // Register validates credentials, hashes the password and stores the user.
@@ -107,21 +130,25 @@ func createSystemUser(ctx context.Context, s *Storage, chat ChatBackend) (User, 
 // platform. Mirroring is currently best-effort: a failure is logged and the
 // registration still succeeds. To change that policy (fail registration,
 // retry in background, ...) adjust this one spot.
-func Register(ctx context.Context, s *Storage, chat ChatBackend, email, password string, role permissions.Role) (User, error) {
-	if _, err := mail.ParseAddress(email); err != nil {
+func Register(ctx context.Context, s *Storage, chat ChatBackend, p RegisterParams) (User, error) {
+	if _, err := mail.ParseAddress(p.Email); err != nil {
 		return User{}, ErrInvalidEmail
 	}
-	if len(password) < minPasswordLen {
+	if len(p.Password) < minPasswordLen {
 		return User{}, ErrPasswordTooShort
 	}
-	if !permissions.ValidRole(role) {
+	if !permissions.ValidRole(p.Role) {
 		return User{}, ErrInvalidRole
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	displayName, err := normalizeDisplayName(p.DisplayName)
 	if err != nil {
 		return User{}, err
 	}
-	u, err := s.CreateUser(ctx, email, string(hash), role)
+	hash, err := bcrypt.GenerateFromPassword([]byte(p.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return User{}, err
+	}
+	u, err := s.CreateUser(ctx, p.Email, string(hash), p.Role, displayName)
 	if err != nil {
 		return User{}, err
 	}
@@ -145,9 +172,10 @@ func Register(ctx context.Context, s *Storage, chat ChatBackend, email, password
 
 // UpdateUserParams is a partial update: nil fields stay unchanged.
 type UpdateUserParams struct {
-	Email    *string
-	Password *string
-	Role     *permissions.Role
+	Email       *string
+	Password    *string
+	Role        *permissions.Role
+	DisplayName *string
 }
 
 // UpdateUser validates and applies the partial update. Changing the
@@ -162,6 +190,15 @@ func UpdateUser(ctx context.Context, s *Storage, id bson.ObjectID, p UpdateUserP
 	}
 	if p.Role != nil && !permissions.ValidRole(*p.Role) {
 		return User{}, ErrInvalidRole
+	}
+	if p.DisplayName != nil {
+		// An explicit "" clears the name — the field is optional, so
+		// unsetting it is a legitimate update, not a no-op.
+		name, err := normalizeDisplayName(*p.DisplayName)
+		if err != nil {
+			return User{}, err
+		}
+		upd.DisplayName = &name
 	}
 	if p.Password != nil {
 		if len(*p.Password) < minPasswordLen {
@@ -266,6 +303,19 @@ func Login(ctx context.Context, s *Storage, email, password string) (User, error
 		return User{}, ErrInvalidCredentials
 	}
 	return u, nil
+}
+
+// normalizeDisplayName trims surrounding whitespace and enforces the length
+// limit. An empty name is valid and means "not set": the field is optional,
+// so trimming a whitespace-only name back to empty is not an error either.
+// The limit counts runes, not bytes — otherwise a name in Cyrillic would be
+// rejected at half the length of one in ASCII.
+func normalizeDisplayName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > maxDisplayNameLen {
+		return "", ErrDisplayNameTooLong
+	}
+	return name, nil
 }
 
 // randomSecret returns 32 random bytes as hex — used for the system

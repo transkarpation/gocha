@@ -22,13 +22,15 @@ GET {{host}}/healthcheck
 
 
 ### Register a new account (always role "user"; 409 if the email is taken)
+# display_name is optional (max 64 chars) — omit it for a nameless account
 # @name register
 POST {{host}}/register
 Content-Type: application/json
 
 {
   "email": "new-user@example.com",
-  "password": "secret123"
+  "password": "secret123",
+  "display_name": "New User"
 }
 
 ### Log in as admin — most requests below need this one
@@ -99,7 +101,8 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
-  "role": "user"
+  "role": "user",
+  "display_name": "Renamed User"
 }
 
 ### Soft-delete a user (deleted_at; the Ethora mirror is kept)

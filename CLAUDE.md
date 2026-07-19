@@ -38,7 +38,8 @@ never touch the `protected_server` database.
 ## Configuration
 
 Priority: env vars > `config.yaml` > defaults in `internal/config/config.go`.
-Env overrides: `APP_PORT`, `MONGO_URI`, `MONGO_DB`. `config.yaml` is gitignored —
+Env overrides: `APP_PORT`, `MONGO_URI`, `MONGO_DB`, `CORS_ALLOWED_ORIGINS`
+(comma-separated). `config.yaml` is gitignored —
 copy it from the tracked `config.example.yaml`. A missing config file is
 not an error (defaults match the docker-compose Mongo: root/example@localhost:27017,
 db `protected_server`, port 8080). Both binaries take a `-config`/`--config` flag.
@@ -74,7 +75,13 @@ per-id deletes and treats a single-id 404 as success (already gone).
 Two entry points share the `internal/` packages:
 
 - `main.go` — HTTP server (chi). `setupRouter` wires all routes; protected
-  routes live in the `r.Group` that applies `users.Handler.Auth`.
+  routes live in the `r.Group` that applies `users.Handler.Auth`. When
+  `server.allowed_origins` is non-empty it installs `corsMiddleware`
+  (`cors.go`) as the first middleware so the SPA can call the API
+  cross-origin without a dev proxy — a listed origin is reflected with
+  credentials allowed, `"*"` allows any origin without credentials, and
+  preflight `OPTIONS` is answered there. The default allows the Vite dev
+  server (`http://localhost:5173`).
 - `cmd/gochactrl/main.go` — admin CLI (`register`, `login`, `delete`,
   `restore`, `list`, `delete-all`, `system`, `init-system` subcommands; all
   except `login` bypass permission checks by design, `delete-all` requires
@@ -91,9 +98,40 @@ Layering inside `internal/users` (and mirrored in `internal/chats`):
 - `service.go` — business logic shared by HTTP and CLI (`Register`, `Login`,
   `UpdateUser`): validation, bcrypt hashing, mirroring policy. New logic
   used by both entry points belongs here, not in handlers.
-- `handler.go` / `middleware.go` — HTTP layer: decode JSON, call service,
-  map sentinel errors to status codes (422 validation, 409 conflict,
-  401 credentials/token, 500 with slog.ErrorContext).
+- `handler.go` / `middleware.go` — HTTP layer: decode JSON, validate the
+  payload (see below), call service, map sentinel errors to status codes
+  (422 validation, 409 conflict, 401 credentials/token, 500 with
+  slog.ErrorContext). `userResponse` is the single place deciding which user
+  fields leave the handler.
+
+Request validation (`internal/validate`, go-playground/validator/v10):
+handlers decode, then `if validate.WriteError(w, validate.Struct(req))
+{ return }`, which answers 422 with `{"error": "<summary>", "fields":
+{"<json name>": "<message>"}}` — `error` stays a plain string because the
+SPA's `errorMessage()` reads it; `fields` is additive and the SPA's
+`fieldErrors()` renders it under the matching input. Errors are keyed by the
+**JSON** field name (`RegisterTagNameFunc`), never the Go one.
+This does **not** replace the service-layer validation: `gochactrl` calls
+the service directly and never passes through a handler, so the service is
+what guarantees the invariant and validator is the outer gate that rejects
+malformed input early with a per-field message. Struct tags cannot reference
+Go constants, so the duplicated limits are pinned by
+`TestTagsMatchServiceLimits` / `TestTagsMatchPackageLimits` — they fail the
+build when a tag and its constant drift apart. Trim before validating
+(`required` accepts `"   "`). `loginRequest` deliberately constrains the
+password to `required` only: a bad password must come back 401 from the
+credential check, not 422 revealing the password policy.
+
+`User.DisplayName` (`display_name`) is the human-readable name. It is
+**optional everywhere on the API** — `gochactrl register` (`--display-name`),
+the system account and every account predating the field may have none — so
+handlers must cope with the empty string. Only the SPA's registration form
+insists on one. The service trims it and caps it at `maxDisplayNameLen` runes
+(`ErrDisplayNameTooLong` → 422); `PATCH /users/{id}` with an explicit `""`
+clears it. `Register` takes `RegisterParams` rather than positional
+arguments so callers cannot swap two strings unnoticed. The Ethora mirror
+maps it onto the mandatory firstName/lastName pair (`splitDisplayName`,
+`internal/mirror`) instead of the random `user_<hex>` placeholder.
 
 User deletion is soft by default: `users.DeleteUser` sets `deleted_at` (which
 also locks out the user's access tokens, since Auth resolves every token

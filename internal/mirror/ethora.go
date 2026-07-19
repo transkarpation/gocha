@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/transkarpation/gocha/internal/users"
 	"github.com/transkarpation/gocha/pkg/ethora"
@@ -31,6 +32,12 @@ func (e *Ethora) MirrorUser(ctx context.Context, u users.User) (users.ChatAccoun
 	bu, err := ethora.RandomBatchUser(u.Email, u.ID.Hex())
 	if err != nil {
 		return users.ChatAccount{}, err
+	}
+	// Ethora shows firstName/lastName in its own UI, so a user with a
+	// display name gets it there instead of the random placeholder. The
+	// password stays random — it is one-off and never stored.
+	if first, last := splitDisplayName(u.DisplayName); first != "" {
+		bu.FirstName, bu.LastName = first, last
 	}
 	created, err := e.client.CreateUsersBatch(ctx, []ethora.BatchUser{bu}, true)
 	if err != nil {
@@ -83,6 +90,23 @@ func (e *Ethora) DeleteUsers(ctx context.Context, userIDs []string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// splitDisplayName maps a free-form display name onto Ethora's mandatory
+// firstName/lastName pair: the first word is the first name, whatever
+// follows is the last name. An empty display name yields an empty first
+// name, which the caller reads as "keep the random placeholder".
+// Ethora rejects an empty lastName, so a single-word name repeats it.
+func splitDisplayName(name string) (first, last string) {
+	fields := strings.Fields(name)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	first = fields[0]
+	if len(fields) == 1 {
+		return first, first
+	}
+	return first, strings.Join(fields[1:], " ")
 }
 
 func isNotFound(err error) bool {
