@@ -41,7 +41,8 @@ Priority: env vars > `config.yaml` > defaults in `internal/config/config.go`.
 Env overrides: `APP_PORT`, `MONGO_URI`, `MONGO_DB`, `CORS_ALLOWED_ORIGINS`
 (comma-separated). `config.yaml` is gitignored —
 copy it from the tracked `config.example.yaml`. A missing config file is
-not an error (defaults match the docker-compose Mongo: root/example@localhost:27017,
+not an error (defaults match the docker-compose Mongo, which runs with
+authentication disabled, so the URI carries no credentials: localhost:27017,
 db `protected_server`, port 8080). Both binaries take a `-config`/`--config` flag.
 
 ## Architecture
@@ -174,6 +175,25 @@ guard its routes with `users.RequirePermission(...)` (applied after `Auth` via
 created only via `gochactrl register --role admin`. Users stored before roles
 existed have no `role` field — storage normalizes that to `user` on read, and
 `permissions.Has` treats empty role as `user` too.
+
+Ownership is not expressible as a permission, so routes that act on "your
+own" resource use two gates: `RequirePermission` for the coarse one and an
+explicit owner check in the handler. `POST /chats/{id}/participants` is the
+pattern — `chats:update` is granted to every role, and `AddParticipants`
+then requires `chat.CreatedBy == caller` unless the caller has
+`chats:moderate` (admin-only, the "act on chats you don't own" override).
+Do NOT approximate the admin case by testing an unrelated admin-only
+permission like `chats:delete`: it works only by accident and breaks the
+moment that permission is regranted.
+
+Listing users comes in two flavours, and the split is deliberate: `users:read`
+(`GET /users`, admin only) returns the whole account incl. role and
+timestamps, while `users:directory` (`GET /users/directory`, every role) is
+the pared-down `id`/`email`/`display_name` listing the SPA needs to pick chat
+participants. `Storage.ListDirectory` also drops the caller (always a
+participant of their own chats) and the system account, so every entry it
+returns is a valid participant. `directoryResponse` — not `userResponse` — is
+what decides those fields; keep roles and timestamps out of it.
 
 Authentication is JWT-only: there are no sessions and no `sessions`
 collection (both removed), so nothing is stored server-side per login.

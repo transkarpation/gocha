@@ -24,7 +24,7 @@ func MongoDB(t *testing.T) *mongo.Database {
 
 	uri := os.Getenv("MONGO_URI")
 	if uri == "" {
-		uri = "mongodb://root:example@localhost:27017"
+		uri = "mongodb://localhost:27017"
 	}
 
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))

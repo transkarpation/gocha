@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 
 import { getToken, setToken } from '@/api/client'
 import * as authService from '@/services/auth.service'
+import { useXmppStore } from '@/stores/xmpp'
 import type { Me } from '@/types'
 
 const XMPP_KEY = 'gocha_xmpp'
@@ -45,13 +46,22 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // Open the XMPP connection with the stored chat credentials. Called after
+  // signing in and once on boot (the creds outlive a reload in localStorage);
+  // it is idempotent and silent when there are no credentials.
+  function connectXmpp() {
+    return useXmppStore().connect(xmpp.value?.username, xmpp.value?.password)
+  }
+
   // Register / log in, store the token and XMPP creds, then resolve the role
   // via /me (the sign-in payload deliberately omits it). Errors bubble up so
-  // the component can render them; the caller catches.
+  // the component can render them; the caller catches. The chat connection is
+  // deliberately not awaited: it must not delay or fail signing in.
   async function register(email: string, password: string, displayName: string) {
     const { data } = await authService.register(email, password, displayName)
     applyToken(data.access_token)
     applyXmpp(data.xmpp_username, data.xmpp_password)
+    void connectXmpp()
     await fetchMe()
   }
 
@@ -59,6 +69,7 @@ export const useAuthStore = defineStore('auth', () => {
     const { data } = await authService.login(email, password)
     applyToken(data.access_token)
     applyXmpp(data.xmpp_username, data.xmpp_password)
+    void connectXmpp()
     await fetchMe()
   }
 
@@ -69,6 +80,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function logout() {
+    void useXmppStore().disconnect()
     applyToken(null)
     applyXmpp()
     user.value = null
@@ -83,6 +95,7 @@ export const useAuthStore = defineStore('auth', () => {
     register,
     login,
     fetchMe,
+    connectXmpp,
     logout,
   }
 })

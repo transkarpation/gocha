@@ -99,6 +99,24 @@ func (s *Storage) MessagesByChat(ctx context.Context, chatID bson.ObjectID, limi
 	return messages, nil
 }
 
+// AddParticipants adds ids to the chat's roster and returns the updated
+// chat. $addToSet keeps the list free of duplicates in the write itself, so
+// two concurrent calls adding the same person cannot double it up, and
+// re-adding an existing participant is a no-op rather than an error.
+func (s *Storage) AddParticipants(ctx context.Context, id bson.ObjectID, ids []bson.ObjectID) (Chat, error) {
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	update := bson.D{{Key: "$addToSet", Value: bson.D{
+		{Key: "participants", Value: bson.D{{Key: "$each", Value: ids}}},
+	}}}
+
+	var c Chat
+	err := s.chats.FindOneAndUpdate(ctx, bson.D{{Key: "_id", Value: id}}, update, opts).Decode(&c)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Chat{}, ErrNotFound
+	}
+	return c, err
+}
+
 func (s *Storage) Delete(ctx context.Context, id bson.ObjectID) error {
 	res, err := s.chats.DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
 	if err != nil {

@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useChatsStore } from '@/stores/chats'
 import { createChat, deleteChat } from '@/services/chats.service'
+import { userDirectory } from '@/services/users.service'
 import { errorMessage } from '@/api/client'
-import type { ChatType } from '@/types'
+import type { ChatType, DirectoryUser } from '@/types'
 
 const auth = useAuthStore()
 const chatsStore = useChatsStore()
@@ -15,31 +16,63 @@ const router = useRouter()
 const error = ref('')
 const notice = ref('')
 
+// --- Who can be added to a chat ---
+// GET /users/directory already leaves out the caller and the system account,
+// so every entry here is a valid participant. 100 is the server's max page.
+const directory = ref<DirectoryUser[]>([])
+const directoryError = ref('')
+const loadingDirectory = ref(false)
+const search = ref('')
+
+function label(u: DirectoryUser) {
+  return u.display_name || u.email
+}
+
+const matches = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return directory.value
+  return directory.value.filter(
+    (u) => u.display_name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q),
+  )
+})
+
+async function loadDirectory() {
+  loadingDirectory.value = true
+  directoryError.value = ''
+  try {
+    const { data } = await userDirectory({ limit: 100 })
+    directory.value = data.users
+  } catch (e) {
+    directoryError.value = errorMessage(e, 'Could not load the user list')
+  } finally {
+    loadingDirectory.value = false
+  }
+}
+
+onMounted(loadDirectory)
+
 // --- Create a new chat ---
 const name = ref('')
 const type = ref<ChatType>('public')
-const participants = ref('')
+const participants = ref<string[]>([])
 const creating = ref(false)
+
+const selected = computed(() => directory.value.filter((u) => participants.value.includes(u.id)))
 
 async function onCreate() {
   error.value = ''
   notice.value = ''
   creating.value = true
   try {
-    // Group chats need at least one other participant; the creator is added
-    // server-side. Split the comma/space separated user ids.
-    const ids =
-      type.value === 'group'
-        ? participants.value
-            .split(/[\s,]+/)
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : undefined
+    // Both chat types take participants; only a group *requires* one besides
+    // the creator, who is added server-side (hence never in the directory).
+    const ids = participants.value.length ? participants.value : undefined
     const { data } = await createChat({ name: name.value.trim(), type: type.value, participants: ids })
     chatsStore.remember({ id: data.id, name: data.name, type: data.type })
     notice.value = `Created "${data.name}".`
     name.value = ''
-    participants.value = ''
+    participants.value = []
+    search.value = ''
     router.push({ name: 'chat', params: { id: data.id } })
   } catch (e) {
     error.value = errorMessage(e, 'Could not create chat')
@@ -154,14 +187,50 @@ async function remove(id: string, chatName: string) {
           <option value="group">Group — participants only</option>
         </select>
       </div>
-      <div v-if="type === 'group'" class="field">
-        <label for="chat-participants">Participant user IDs</label>
-        <input
-          id="chat-participants"
-          v-model="participants"
-          placeholder="comma or space separated — at least one besides you"
-        />
-        <span class="muted small">You are added automatically; a group needs one more.</span>
+      <div class="field">
+        <label>Participants</label>
+        <span v-if="type === 'group'" class="muted small">
+          You are added automatically; a group needs at least one more. Only
+          participants can read a group chat.
+        </span>
+        <span v-else class="muted small">
+          Optional — you are added automatically. A public chat stays readable by
+          any signed-in user, so this is its roster, not a restriction.
+        </span>
+
+        <div v-if="directoryError" class="alert alert-error" style="margin-top: 0.6rem">
+          {{ directoryError }}
+          <button type="button" class="btn btn-sm" @click="loadDirectory">Retry</button>
+        </div>
+        <div v-else-if="loadingDirectory" class="muted small" style="margin-top: 0.6rem">
+          Loading users…
+        </div>
+        <div v-else-if="!directory.length" class="empty" style="margin-top: 0.6rem">
+          No other users are registered yet.
+        </div>
+        <template v-else>
+          <input
+            v-model="search"
+            type="search"
+            placeholder="Filter by name or email"
+            style="margin-top: 0.6rem"
+          />
+          <div class="picker">
+            <label v-for="u in matches" :key="u.id" class="picker-row">
+              <input type="checkbox" :value="u.id" v-model="participants" />
+              <span class="picker-name">{{ label(u) }}</span>
+              <span v-if="u.display_name" class="muted small">{{ u.email }}</span>
+            </label>
+            <div v-if="!matches.length" class="muted small" style="padding: 0.5rem">
+              Nobody matches "{{ search }}".
+            </div>
+          </div>
+          <span class="muted small">
+            {{ selected.length }} selected{{
+              selected.length ? `: ${selected.map(label).join(', ')}` : ''
+            }}
+          </span>
+        </template>
       </div>
       <button class="btn btn-primary" :disabled="creating">
         {{ creating ? 'Creating…' : 'Create chat' }}

@@ -129,11 +129,29 @@ func (s *Storage) findUser(ctx context.Context, filter bson.D) (User, error) {
 
 // ListUsers returns users ordered by creation time (oldest first).
 func (s *Storage) ListUsers(ctx context.Context, limit, offset int64) ([]User, error) {
+	return s.listUsers(ctx, bson.D{notDeleted}, limit, offset)
+}
+
+// ListDirectory returns the users one may pick chat participants from:
+// everyone alive except the caller — always a participant of their own
+// chats, so offering them is noise — and the system account, which sends
+// service messages and is not a person to chat with. Same order as
+// ListUsers.
+func (s *Storage) ListDirectory(ctx context.Context, exclude bson.ObjectID, limit, offset int64) ([]User, error) {
+	filter := bson.D{
+		notDeleted,
+		{Key: "_id", Value: bson.D{{Key: "$ne", Value: exclude}}},
+		{Key: "email", Value: bson.D{{Key: "$ne", Value: SystemEmail}}},
+	}
+	return s.listUsers(ctx, filter, limit, offset)
+}
+
+func (s *Storage) listUsers(ctx context.Context, filter bson.D, limit, offset int64) ([]User, error) {
 	opts := options.Find().
 		SetSort(bson.D{{Key: "created_at", Value: 1}}).
 		SetLimit(limit).
 		SetSkip(offset)
-	cur, err := s.users.Find(ctx, bson.D{notDeleted}, opts)
+	cur, err := s.users.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
 	}

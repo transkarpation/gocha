@@ -66,7 +66,10 @@ func defaults() Config {
 			AllowedOrigins: []string{"http://localhost:5173", "http://127.0.0.1:5173"},
 		},
 		Mongo: MongoConfig{
-			URI:      "mongodb://root:example@localhost:27017",
+			// The docker-compose Mongo runs without authentication, so the
+			// URI carries no credentials. Point MONGO_URI at a secured
+			// instance (with user:pass) for anything but local development.
+			URI:      "mongodb://localhost:27017",
 			Database: "protected_server",
 		},
 		Ethora: EthoraConfig{

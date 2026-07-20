@@ -12,7 +12,9 @@ server:
     - http://127.0.0.1:5173
 
 mongo:
-  uri: mongodb://root:example@localhost:27017
+  # The docker-compose Mongo has authentication disabled — no credentials in
+  # the URI. Use mongodb://user:pass@host:27017 against a secured instance.
+  uri: mongodb://localhost:27017
   database: protected_server
 
 # Ethora API credentials (https://ethora.com); keep real values out of git

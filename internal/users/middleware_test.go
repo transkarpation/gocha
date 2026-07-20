@@ -493,6 +493,83 @@ func TestListUsersRoute(t *testing.T) {
 	}
 }
 
+// The directory is the one listing a plain user may read. It must show the
+// other members (so they can be picked as chat participants) while hiding
+// the caller, the system account and everything beyond id/email/name.
+func TestDirectoryRoute(t *testing.T) {
+	s, h := authTestEnv(t)
+	ctx := context.Background()
+
+	caller, err := Register(ctx, s, nil, RegisterParams{Email: "caller@example.com", Password: "secret123", Role: permissions.RoleUser})
+	if err != nil {
+		t.Fatalf("Register caller: %v", err)
+	}
+	other, err := Register(ctx, s, nil, RegisterParams{Email: "other@example.com", Password: "secret123", Role: permissions.RoleUser, DisplayName: "Other"})
+	if err != nil {
+		t.Fatalf("Register other: %v", err)
+	}
+	if _, err := EnsureSystemUser(ctx, s, nil); err != nil {
+		t.Fatalf("EnsureSystemUser: %v", err)
+	}
+	deleted, err := Register(ctx, s, nil, RegisterParams{Email: "gone@example.com", Password: "secret123", Role: permissions.RoleUser})
+	if err != nil {
+		t.Fatalf("Register deleted: %v", err)
+	}
+	if err := DeleteUser(ctx, s, deleted.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	token, err := IssueToken(caller, testJWTSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(h.Auth)
+		r.With(RequirePermission(permissions.UsersDirectory)).Get("/users/directory", h.Directory)
+	})
+
+	do := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := do("/users/directory?limit=0"); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("bad limit: status = %d, want 422", rec.Code)
+	}
+
+	rec := do("/users/directory")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("directory: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Users []map[string]any `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.Users) != 1 {
+		t.Fatalf("got %d users (%v), want only %s", len(resp.Users), resp.Users, other.Email)
+	}
+	got := resp.Users[0]
+	if got["id"] != other.ID.Hex() || got["email"] != other.Email || got["display_name"] != "Other" {
+		t.Errorf("entry = %v, want id/email/display_name of %s", got, other.Email)
+	}
+	// Roles, timestamps and hashes are none of a plain user's business.
+	for k := range got {
+		switch k {
+		case "id", "email", "display_name":
+		default:
+			t.Errorf("unexpected field %q in directory entry: %v", k, got)
+		}
+	}
+}
+
 func TestUpdateUserRoute(t *testing.T) {
 	s, h := authTestEnv(t)
 	ctx := context.Background()

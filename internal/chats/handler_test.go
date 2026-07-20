@@ -74,6 +74,7 @@ type testEnv struct {
 	otherID     bson.ObjectID
 	adminToken  string
 	strangerTok string
+	strangerID  bson.ObjectID
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -98,6 +99,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	r.Group(func(r chi.Router) {
 		r.Use(uh.Auth)
 		r.With(users.RequirePermission(permissions.ChatsCreate)).Post("/chats", ch.Create)
+		r.With(users.RequirePermission(permissions.ChatsUpdate)).Post("/chats/{id}/participants", ch.AddParticipants)
 		r.With(users.RequirePermission(permissions.ChatsDelete)).Delete("/chats/{id}", ch.Delete)
 		r.With(users.RequirePermission(permissions.MessagesCreate)).Post("/chats/{id}/messages", ch.SendMessage)
 		r.With(users.RequirePermission(permissions.MessagesRead)).Get("/chats/{id}/messages", ch.ListMessages)
@@ -118,7 +120,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	env.userID, env.userToken = register("user@example.com", permissions.RoleUser)
 	env.otherID, env.otherToken = register("other@example.com", permissions.RoleUser)
 	_, env.adminToken = register("admin@example.com", permissions.RoleAdmin)
-	_, env.strangerTok = register("stranger@example.com", permissions.RoleUser)
+	env.strangerID, env.strangerTok = register("stranger@example.com", permissions.RoleUser)
 	return env
 }
 
@@ -201,6 +203,109 @@ func TestCreateChat(t *testing.T) {
 			t.Errorf("status = %d, want 401", rec.Code)
 		}
 	})
+}
+
+func TestAddParticipants(t *testing.T) {
+	env := newTestEnv(t)
+
+	// A group chat owned by env.userID, with nobody else in it yet.
+	create := func(t *testing.T) string {
+		t.Helper()
+		body := fmt.Sprintf(`{"name":"Team","type":"group","participants":["%s"]}`, env.otherID.Hex())
+		rec := env.do(t, http.MethodPost, "/chats", env.userToken, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create chat: status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		return decodeJSON(t, rec)["id"].(string)
+	}
+
+	t.Run("creator adds a newcomer", func(t *testing.T) {
+		id := create(t)
+		body := fmt.Sprintf(`{"participants":["%s"]}`, env.strangerID.Hex())
+		rec := env.do(t, http.MethodPost, "/chats/"+id+"/participants", env.userToken, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		parts := decodeJSON(t, rec)["participants"].([]any)
+		if len(parts) != 3 {
+			t.Fatalf("participants = %v, want creator + other + stranger", parts)
+		}
+		if parts[2] != env.strangerID.Hex() {
+			t.Errorf("appended %v, want %s", parts[2], env.strangerID.Hex())
+		}
+
+		// Re-adding the same person is a no-op, not a duplicate: $addToSet
+		// makes the call idempotent.
+		rec = env.do(t, http.MethodPost, "/chats/"+id+"/participants", env.userToken, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("repeat: status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if parts := decodeJSON(t, rec)["participants"].([]any); len(parts) != 3 {
+			t.Errorf("after re-add participants = %v, want unchanged", parts)
+		}
+	})
+
+	t.Run("admin may add to a chat they do not own", func(t *testing.T) {
+		id := create(t)
+		body := fmt.Sprintf(`{"participants":["%s"]}`, env.otherID.Hex())
+		rec := env.do(t, http.MethodPost, "/chats/"+id+"/participants", env.adminToken, body)
+		if rec.Code != http.StatusOK {
+			t.Errorf("admin: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("a participant who is not the creator may not", func(t *testing.T) {
+		id := create(t)
+		body := fmt.Sprintf(`{"participants":["%s"]}`, env.userID.Hex())
+		rec := env.do(t, http.MethodPost, "/chats/"+id+"/participants", env.otherToken, body)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("participant: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("an outsider may not", func(t *testing.T) {
+		id := create(t)
+		body := fmt.Sprintf(`{"participants":["%s"]}`, env.userID.Hex())
+		rec := env.do(t, http.MethodPost, "/chats/"+id+"/participants", env.strangerTok, body)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("stranger: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("anonymous rejected", func(t *testing.T) {
+		id := create(t)
+		rec := env.do(t, http.MethodPost, "/chats/"+id+"/participants", "", `{"participants":[]}`)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rec.Code)
+		}
+	})
+
+	t.Run("unknown chat", func(t *testing.T) {
+		body := fmt.Sprintf(`{"participants":["%s"]}`, env.otherID.Hex())
+		rec := env.do(t, http.MethodPost, "/chats/"+bson.NewObjectID().Hex()+"/participants", env.userToken, body)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	validation := []struct {
+		name string
+		body string
+	}{
+		{"empty list", `{"participants":[]}`},
+		{"missing key", `{}`},
+		{"invalid id", `{"participants":["nope"]}`},
+		{"nonexistent user", `{"participants":["000000000000000000000000"]}`},
+	}
+	for _, tt := range validation {
+		t.Run(tt.name, func(t *testing.T) {
+			id := create(t)
+			rec := env.do(t, http.MethodPost, "/chats/"+id+"/participants", env.userToken, tt.body)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want 422 (body: %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestDeleteChat(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/transkarpation/gocha/internal/permissions"
 	"github.com/transkarpation/gocha/internal/users"
 	"github.com/transkarpation/gocha/internal/validate"
 )
@@ -95,20 +96,107 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ids := make([]string, len(chat.Participants))
-	for i, id := range chat.Participants {
-		ids[i] = id.Hex()
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]any{
-		"id":           chat.ID.Hex(),
-		"name":         chat.Name,
-		"type":         chat.Type,
+	json.NewEncoder(w).Encode(chatJSON(chat))
+}
+
+// chatJSON is the public shape of a chat — the one place deciding which
+// fields leave the handler, shared by Create and AddParticipants.
+func chatJSON(c Chat) map[string]any {
+	ids := make([]string, len(c.Participants))
+	for i, id := range c.Participants {
+		ids[i] = id.Hex()
+	}
+	return map[string]any{
+		"id":           c.ID.Hex(),
+		"name":         c.Name,
+		"type":         c.Type,
 		"participants": ids,
-		"created_by":   chat.CreatedBy.Hex(),
-		"created_at":   chat.CreatedAt,
-	})
+		"created_by":   c.CreatedBy.Hex(),
+		"created_at":   c.CreatedAt,
+	}
+}
+
+// addParticipantsRequest carries the ids to add. Like createRequest the
+// slice is untagged: parseIDs resolves and reports each id itself.
+type addParticipantsRequest struct {
+	Participants []string `json:"participants"`
+}
+
+// AddParticipants grows a chat's roster. The route requires chats:update,
+// which plain users have too, so the real gate is here: only the chat's
+// creator or an admin may change who is in it. Adding someone already in
+// the chat is a no-op ($addToSet), which keeps the call idempotent.
+func (h *Handler) AddParticipants(w http.ResponseWriter, r *http.Request) {
+	caller, ok := users.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id, err := bson.ObjectIDFromHex(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid chat id")
+		return
+	}
+
+	chat, err := h.storage.ChatByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(r.Context(), "load chat", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Being a participant is not enough: a member must not be able to pull
+	// strangers into someone else's chat.
+	if chat.CreatedBy != caller.ID && !permissions.Has(caller.Role, permissions.ChatsModerate) {
+		writeError(w, http.StatusForbidden, "only the chat creator can add participants")
+		return
+	}
+
+	var req addParticipantsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	ids, err := parseIDs(req.Participants)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if len(ids) == 0 {
+		writeError(w, http.StatusUnprocessableEntity, "participants must not be empty")
+		return
+	}
+
+	count, err := h.users.CountExisting(r.Context(), ids)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "count participants", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if count != int64(len(ids)) {
+		writeError(w, http.StatusUnprocessableEntity, "some participants do not exist")
+		return
+	}
+
+	updated, err := h.storage.AddParticipants(r.Context(), id, ids)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(r.Context(), "add participants", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(chatJSON(updated))
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -263,6 +351,26 @@ func messageJSON(m Message) map[string]any {
 
 // parseParticipants converts hex ids to ObjectIDs, removes duplicates
 // and makes sure the creator is always included.
+// parseIDs converts hex ids to ObjectIDs and removes duplicates, without
+// injecting anyone — unlike parseParticipants, which always adds the
+// creator because a chat cannot exist without them.
+func parseIDs(raw []string) ([]bson.ObjectID, error) {
+	seen := map[bson.ObjectID]bool{}
+	out := []bson.ObjectID{}
+	for _, s := range raw {
+		id, err := bson.ObjectIDFromHex(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid participant id: %q", s)
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 func parseParticipants(raw []string, creator bson.ObjectID) ([]bson.ObjectID, error) {
 	seen := map[bson.ObjectID]bool{creator: true}
 	out := []bson.ObjectID{creator}

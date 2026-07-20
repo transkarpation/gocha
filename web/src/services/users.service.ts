@@ -1,13 +1,20 @@
 import client from '@/api/client'
-import type { Role, User } from '@/types'
+import type { DirectoryUser, Role, User } from '@/types'
 
 export interface ListUsersParams {
   limit?: number
   offset?: number
 }
 
+/** Admin-only: the full listing, with roles and timestamps. */
 export function listUsers(params: ListUsersParams = {}) {
   return client.get<{ users: User[] }>('/users', { params })
+}
+
+/** Open to every signed-in user: who you can add to a chat. Excludes you and
+ *  the system account server-side. `limit` maxes out at 100. */
+export function userDirectory(params: ListUsersParams = {}) {
+  return client.get<{ users: DirectoryUser[] }>('/users/directory', { params })
 }
 
 export interface UpdateUserPayload {

@@ -34,6 +34,16 @@ export interface User {
   created_at: string
 }
 
+/** An entry of GET /users/directory — the listing every authenticated user
+ *  may read to pick chat participants. Deliberately narrower than `User`:
+ *  no role, no timestamps. The caller and the system account are not in it. */
+export interface DirectoryUser {
+  id: string
+  email: string
+  /** Empty for accounts with no name — fall back to the email as the label. */
+  display_name: string
+}
+
 export type ChatType = 'public' | 'group'
 
 /** POST /chats response. */

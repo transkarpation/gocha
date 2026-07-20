@@ -92,11 +92,13 @@ Authenticated (send `Authorization: Bearer <access_token>` or the
 | Method | Path | Permission | Description |
 |---|---|---|---|
 | `GET` | `/me` | — | current user |
+| `GET` | `/users/directory` | `users:directory` (any user) | who you can add to a chat: `id`, `email`, `display_name` only, excluding you and the system account (`?limit=`, `?offset=`) |
 | `GET` | `/users` | `users:read` (admin only) | list users, oldest first (`?limit=`, `?offset=`) |
 | `PATCH` | `/users/{id}` | `users:update` (admin only) | partial update (`email`, `role`, `password`); a password change revokes the user's tokens |
 | `DELETE` | `/users/{id}` | `users:delete` (admin only) | soft-delete a user (sets `deleted_at`, revokes their tokens; Ethora mirror is kept) |
 | `POST` | `/users/{id}/restore` | `users:update` (admin only) | restore a soft-deleted user (409 if not deleted) |
 | `POST` | `/chats` | `chats:create` | create a chat (`name`, `type`: `public`/`group`, `participants`: user ids) |
+| `POST` | `/chats/{id}/participants` | `chats:update` + creator (or `chats:moderate`, admin) | add users to a chat (`participants`: user ids); already-present ids are skipped, so the call is idempotent |
 | `DELETE` | `/chats/{id}` | `chats:delete` (admin only) | delete a chat |
 | `POST` | `/chats/{id}/messages` | `messages:create` | send a message (`text`) |
 | `GET` | `/chats/{id}/messages` | `messages:read` | list messages, newest first (`?limit=`, `?offset=`) |

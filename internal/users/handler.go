@@ -209,26 +209,77 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// List returns users, oldest first (admin permission is enforced by the
-// route). Password hashes never leave the handler.
-func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	limit := int64(defaultUsersLimit)
+// paging reads the limit/offset query parameters, answering 422 and
+// reporting false when either is malformed. Shared by List and Directory so
+// the two listings page identically.
+func paging(w http.ResponseWriter, r *http.Request) (limit, offset int64, ok bool) {
+	limit = int64(defaultUsersLimit)
 	if v := r.URL.Query().Get("limit"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 1 || n > maxUsersLimit {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("limit must be 1-%d", maxUsersLimit))
-			return
+			return 0, 0, false
 		}
 		limit = n
 	}
-	offset := int64(0)
 	if v := r.URL.Query().Get("offset"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 0 {
 			writeError(w, http.StatusUnprocessableEntity, "offset must be >= 0")
-			return
+			return 0, 0, false
 		}
 		offset = n
+	}
+	return limit, offset, true
+}
+
+// directoryResponse is the pared-down user shape every authenticated user
+// may see: enough to recognise and pick someone as a chat participant, and
+// nothing more — no role, no timestamps. display_name is often empty (the
+// CLI and older accounts have none), so email doubles as the label.
+func directoryResponse(u User) map[string]any {
+	return map[string]any{
+		"id":           u.ID.Hex(),
+		"email":        u.Email,
+		"display_name": u.DisplayName,
+	}
+}
+
+// Directory lists the users one can add to a chat — everyone but the caller
+// and the system account. Unlike List (admin-only) this is open to every
+// authenticated user, so it deliberately returns fewer fields.
+func (h *Handler) Directory(w http.ResponseWriter, r *http.Request) {
+	caller, ok := FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	limit, offset, ok := paging(w, r)
+	if !ok {
+		return
+	}
+
+	list, err := h.storage.ListDirectory(r.Context(), caller.ID, limit, offset)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "list user directory", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	out := make([]map[string]any, len(list))
+	for i, u := range list {
+		out[i] = directoryResponse(u)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"users": out})
+}
+
+// List returns users, oldest first (admin permission is enforced by the
+// route). Password hashes never leave the handler.
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	limit, offset, ok := paging(w, r)
+	if !ok {
+		return
 	}
 
 	list, err := h.storage.ListUsers(r.Context(), limit, offset)

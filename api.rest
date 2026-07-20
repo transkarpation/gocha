@@ -28,7 +28,7 @@ POST {{host}}/register
 Content-Type: application/json
 
 {
-  "email": "new-user@example.com",
+  "email": "new-userexample.com",
   "password": "secret123",
   "display_name": "New User"
 }
@@ -82,6 +82,14 @@ GET {{host}}/me
 ### Cookie instead of the header (what a browser does)
 GET {{host}}/me
 Cookie: access_token={{token}}
+
+
+## User directory (any signed-in user)
+
+### Who you can add to a chat — id, email, display_name only.
+# Excludes you and the system account, so every entry is a valid participant.
+GET {{host}}/users/directory?limit=100
+Authorization: Bearer {{userToken}}
 
 
 ## Users (admin only)
@@ -143,6 +151,26 @@ Content-Type: application/json
 
 @publicChatId = {{publicChat.response.body.$.id}}
 @groupChatId = {{groupChat.response.body.$.id}}
+
+### Add participants to an existing chat
+# Creator or admin only — a plain participant gets 403. Ids already in the
+# chat are skipped, so replaying this request is harmless.
+POST {{host}}/chats/{{groupChatId}}/participants
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "participants": ["{{userId}}"]
+}
+
+### Same call as a non-creator → 403
+POST {{host}}/chats/{{groupChatId}}/participants
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "participants": ["{{userId}}"]
+}
 
 ### Send a message (text: 1-2000 chars)
 POST {{host}}/chats/{{publicChatId}}/messages

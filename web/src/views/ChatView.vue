@@ -4,9 +4,10 @@ import { RouterLink, useRoute } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useChatsStore } from '@/stores/chats'
-import { listMessages, sendMessage } from '@/services/chats.service'
+import { addParticipants, listMessages, sendMessage } from '@/services/chats.service'
+import { userDirectory } from '@/services/users.service'
 import { errorMessage } from '@/api/client'
-import type { Message } from '@/types'
+import type { DirectoryUser, Message } from '@/types'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -116,6 +117,54 @@ function formatTime(iso: string) {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
 }
 
+// --- Adding participants ---
+// There is no GET /chats/{id}, so the SPA cannot tell whether you are this
+// chat's creator, nor who is already in it. The panel is therefore offered
+// to everyone and the server has the final say: a 403 lands in addError.
+// Re-adding an existing participant is a no-op server-side, so an entry
+// already in the chat does no harm.
+const showAdd = ref(false)
+const directory = ref<DirectoryUser[]>([])
+const toAdd = ref<string[]>([])
+const adding = ref(false)
+const addError = ref('')
+const addNotice = ref('')
+const roster = ref<string[] | null>(null)
+
+function label(u: DirectoryUser) {
+  return u.display_name || u.email
+}
+
+async function togglePanel() {
+  showAdd.value = !showAdd.value
+  addError.value = ''
+  addNotice.value = ''
+  if (!showAdd.value || directory.value.length) return
+  try {
+    const { data } = await userDirectory({ limit: 100 })
+    directory.value = data.users
+  } catch (e) {
+    addError.value = errorMessage(e, 'Could not load the user list')
+  }
+}
+
+async function onAdd() {
+  if (!toAdd.value.length) return
+  adding.value = true
+  addError.value = ''
+  addNotice.value = ''
+  try {
+    const { data } = await addParticipants(chatId.value, toAdd.value)
+    roster.value = data.participants
+    addNotice.value = `Added. The chat now has ${data.participants.length} participants.`
+    toAdd.value = []
+  } catch (e) {
+    addError.value = errorMessage(e, 'Could not add participants')
+  } finally {
+    adding.value = false
+  }
+}
+
 onMounted(() => {
   loadLatest()
   if (autoRefresh.value) startAuto()
@@ -132,10 +181,49 @@ onBeforeUnmount(stopAuto)
         {{ known.type }}
       </span>
     </div>
-    <RouterLink class="btn btn-sm" :to="{ name: 'chats' }">← All chats</RouterLink>
+    <div class="row" style="gap: 0.4rem">
+      <button class="btn btn-sm" @click="togglePanel">
+        {{ showAdd ? 'Close' : 'Add participants' }}
+      </button>
+      <RouterLink class="btn btn-sm" :to="{ name: 'chats' }">← All chats</RouterLink>
+    </div>
   </div>
 
   <div v-if="error" class="alert alert-error">{{ error }}</div>
+
+  <div v-if="showAdd" class="card">
+    <h2 style="margin-top: 0">Add participants</h2>
+    <p class="muted small">
+      Only the chat's creator (or an admin) may change who is in it. Someone
+      already in the chat is skipped.
+    </p>
+
+    <div v-if="addError" class="alert alert-error">{{ addError }}</div>
+    <div v-if="addNotice" class="alert alert-success">{{ addNotice }}</div>
+
+    <div v-if="!directory.length && !addError" class="muted small">Loading users…</div>
+    <template v-else-if="directory.length">
+      <div class="picker">
+        <label v-for="u in directory" :key="u.id" class="picker-row">
+          <input type="checkbox" :value="u.id" v-model="toAdd" />
+          <span class="picker-name">{{ label(u) }}</span>
+          <span v-if="u.display_name" class="muted small">{{ u.email }}</span>
+        </label>
+      </div>
+      <button
+        class="btn btn-primary"
+        style="margin-top: 1rem"
+        :disabled="adding || !toAdd.length"
+        @click="onAdd"
+      >
+        {{ adding ? 'Adding…' : `Add ${toAdd.length || ''}`.trim() }}
+      </button>
+    </template>
+
+    <p v-if="roster" class="muted small" style="margin-top: 1rem">
+      Participant ids: <span class="mono">{{ roster.join(', ') }}</span>
+    </p>
+  </div>
 
   <div class="card" style="padding: 0; overflow: hidden">
     <div class="row-between" style="padding: 0.75rem 1rem; border-bottom: 1px solid var(--border)">

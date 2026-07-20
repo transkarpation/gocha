@@ -66,11 +66,17 @@ func setupRouter(storage *users.Storage, chatStorage *chats.Storage, chat users.
 	r.Group(func(r chi.Router) {
 		r.Use(h.Auth)
 		r.Get("/me", h.Me)
+		// Static path before the admin listing: every user may read the
+		// directory to pick chat participants, /users itself stays admin-only.
+		r.With(users.RequirePermission(permissions.UsersDirectory)).Get("/users/directory", h.Directory)
 		r.With(users.RequirePermission(permissions.UsersRead)).Get("/users", h.List)
 		r.With(users.RequirePermission(permissions.UsersUpdate)).Patch("/users/{id}", h.Update)
 		r.With(users.RequirePermission(permissions.UsersUpdate)).Post("/users/{id}/restore", h.Restore)
 		r.With(users.RequirePermission(permissions.UsersDelete)).Delete("/users/{id}", h.Delete)
 		r.With(users.RequirePermission(permissions.ChatsCreate)).Post("/chats", ch.Create)
+		// chats:update is a coarse gate every role has; the handler enforces
+		// that the chat is the caller's own (chats:moderate lifts that).
+		r.With(users.RequirePermission(permissions.ChatsUpdate)).Post("/chats/{id}/participants", ch.AddParticipants)
 		r.With(users.RequirePermission(permissions.ChatsDelete)).Delete("/chats/{id}", ch.Delete)
 		r.With(users.RequirePermission(permissions.MessagesCreate)).Post("/chats/{id}/messages", ch.SendMessage)
 		r.With(users.RequirePermission(permissions.MessagesRead)).Get("/chats/{id}/messages", ch.ListMessages)
